@@ -1,0 +1,2 @@
+# openai_chat
+个人调用openai_API开发的基础聊天机器人项目
