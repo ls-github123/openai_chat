@@ -1,0 +1,77 @@
+# version: "3.9" Docker Compose 文件版本
+
+services:
+  # OpenAI-chat聊天机器人项目,数据库服务配置
+  mysql: # Mysql服务配置
+    image: mysql:8.0 # 使用官方Mysql 8.0镜像
+    container_name: openai_chat_mysql # 容器名称
+    restart: unless-stopped # 容器异常时自动重启
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD} # ROOT用户密码
+      MYSQL_DATABASE: ${MYSQL_DATABASE} # 初始化数据库-默认数据库名称
+      MYSQL_USER: ${MYSQL_USER} # 应用使用用户名
+      MYSQL_PASSWORD: ${MYSQL_USER_PASSWORD} # 应用用户密码
+    command:
+      - "--max_connections=30" # 限制最大连接数,节省线程和内存资源
+      - "--innodb-buffer-pool-size=64M" # 设置 InnoDB 缓冲池大小（默认占用较大内存）
+      - "--table_open_cache=200" # 限制同时打开表数量
+      - "--key_buffer_size=8M" # MyISAM 表键缓存设置为较小值
+      - "--thread_cache_size=4" # 限制线程缓存池大小，节省线程开销
+    volumes:
+      - openai_chat_mysql:/var/lib/mysql # 使用已创建的数据卷持久化存储
+    ports:
+      - "3306:3306" # 开发阶段开放，部署后需关闭
+    networks:
+      - openai_chat_network # 加入 openai_chat_network Docker网络
+  
+  redis: # Redis服务配置
+    image: redis:7.4.2-alpine # Redis官方轻量镜像
+    container_name: openai_chat_redis
+    restart: unless-stopped # 容器异常时自动重启
+    command: [
+      "redis-server",
+      "--maxmemory", "64mb", # 限制redis最大可用内存为 64MB,超出后将开始淘汰键
+      "--maxmemory-policy", "allkeys-lru", # 使用 allkeys-lru 策略:所有键都可能被淘汰,淘汰最久未使用的键(Least Recently Used)
+      "--requirepass", "${REDIS_PASSWORD}", # 设置Redis密码
+      "--appendonly", "yes", # 开启AOF持久化, 写操作日志
+      "--appendfsync", "everysec", # 每秒同步一次AOF文件到磁盘,仅在写入操作时触发,兼顾性能与数据安全
+      "--save", "300 10", # 每 300 秒若有 10 次写操作，则触发 RDB 快照
+      "--save", "60 10000", # 每 60 秒若有 10000 次写操作，则触发 RDB 快照
+      "--loglevel", "warning", # 降低控制台输出日志级别,减少日志干扰
+      "--protected-mode", "yes", # 开启保护模式,仅允许本地或认证用户访问（增强安全性）
+    ]
+    volumes:
+      - openai_chat_redis:/data # 使用已创建的数据卷持久化存储
+    ports:
+      - "6379:6379" # 开发阶段开放，部署后需关闭
+    networks:
+      - openai_chat_network
+  
+  mongodb: # MongoDB文档数据库服务
+    image: mongo:6.0 # MongoDB官方稳定版镜像
+    container_name: openai_chat_mongodb # 容器名称
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME} # MongoDB root 用户名
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD} # MongoDB root 用户密码
+      MONGO_INITDB_DATABASE: ${MONGO_DB} # 初始化数据库名称
+    command: mongod --wiredTigerCacheSizeGB 0.25 # 设置 WiredTiger 缓存大小为 0.25GB
+    volumes:
+      - openai_chat_mongodb:/data/db # 持久化数据库主数据目录
+      - openai_chat_mongodb:/data/configdb # 持久化数据库配置目录
+    ports:
+      - "27017:27017" # 开发阶段开放，部署后需关闭
+    networks:
+      - openai_chat_network
+
+volumes:
+  openai_chat_mysql: # MySQL数据卷
+    external: true # 使用外部数据卷
+  openai_chat_redis: # Redis数据卷
+    external: true # 使用外部数据卷
+  openai_chat_mongodb: # MongoDB数据卷
+    external: true # 使用外部数据卷
+
+networks:
+  openai_chat_network: # Docker网络
+    external: true # 使用已存在网络
