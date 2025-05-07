@@ -15,11 +15,11 @@ VAULT_URL = config('VAULT_URL') # Azure Key Vault URL
 vault = AzureKeyVaultClient(VAULT_URL) # 实例化Azure Key Vault客户端
 
 # 安全配置
-SECRET_KEY = vault.get_secret("DJANGO-SECRET-KEY")
-DEBUG = config("DEBUG", cast=bool, default=True)
-ENVIRONMENT = config("ENVIRONMENT", default="dev") # 当前运行环境类型
+SECRET_KEY = vault.get_secret(config("DJANGO-SECRET-KEY-NAME"))
+# DEBUG = config("DEBUG", cast=bool, default=True)
+# ENVIRONMENT = config("ENVIRONMENT", default="dev") # 当前运行环境类型
 # 允许的主机列表 Csv()用于将逗号分隔的字符串转换为列表
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv(), default="*")
+# ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv(), default="*")
 
 # --- 应用注册 ---
 INSTALLED_APPS = [
@@ -30,7 +30,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles', # 静态文件处理
-    'users' # 用户管理模块
+    # 'users' # 用户管理模块
 ]
 
 # --- 中间件配置 ---
@@ -47,6 +47,24 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'openai_chat.urls' # 根URL配置
 
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+                'django.template.context_processors.csrf',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'openai_chat.wsgi.application'
+
 # 跨域配置
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True # 允许携带cookie
@@ -54,7 +72,7 @@ CORS_ALLOW_CREDENTIALS = True # 允许携带cookie
 # Mysql数据库配置
 DATABASES = {
     'default': {
-        "ENGINE": config('DB_ENGINE', default='django.db.backends.mysql'), # 数据库引擎
+        "ENGINE": 'django.db.backends.mysql', # 数据库引擎
         "NAME": config('DB_NAME', default='openai_chat_db'), # 数据库名称
         "USER": config('DB_USER', default='root'), # 数据库用户名
         "PASSWORD": vault.get_secret(config('DB_PASSWORD_NAME')), # 数据库密码
@@ -91,13 +109,14 @@ CACHES = {
 }
 
 # MongoDB配置
+MONGO_DB_NAME = config('MONGO_DB_NAME')
 MONGO_USER = config('MONGO_USER', default='root') # MongoDB用户名
 MONGO_HOST = config('MONGO_HOST', default='localhost') # MongoDB主机地址
 MONGO_PORT = config('MONGO_PORT', default='27017') # MongoDB主机端口号
 MONGO_PASSWORD = vault.get_secret(config('MONGO_PASSWORD_NAME')) # MongoDB密码
 
 MONGO_CONFIG = {
-    'URI': f'mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/?authSource=admin', # MongoDB连接地址
+    'URI': f'mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}?authSource={MONGO_DB_NAME}', # MongoDB连接地址
 }
 
 mongo_client = MongoClient(
@@ -107,7 +126,7 @@ mongo_client = MongoClient(
     serverSelectionTimeoutMS=2000, # 服务器选择超时时间
 )
 
-mongo_db = mongo_client.get_database() # 获取MongoDB数据库实例
+mongo_db = mongo_client.get_database(MONGO_DB_NAME) # 获取MongoDB数据库实例
 
 # 密码强度验证器配置
 AUTH_PASSWORD_VALIDATORS = [] # 使用Authentik服务进行校验,不在此处配置
