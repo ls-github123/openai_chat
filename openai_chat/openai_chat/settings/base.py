@@ -4,20 +4,15 @@
 """
 import os
 from pathlib import Path
-from decouple import config, Csv
+from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
 from .azure_key_vault_client import AzureKeyVaultClient # 自定义的Azure Key Vault 客户端
 from pymongo import MongoClient # MongoDB客户端
-from .config import DJANGO_SECRET_KEY, REDIS_PASSWORD, MONGO_PASSWORD, MYSQL_PASSWORD
 
 # 基础目录
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # 项目根路径
 
-# # Azure key vault配置
-# VAULT_URL = config('VAULT_URL') # Azure Key Vault URL
-# vault = AzureKeyVaultClient(VAULT_URL) # type: ignore # 实例化Azure Key Vault客户端
-
 # 安全配置
-SECRET_KEY = DJANGO_SECRET_KEY
+SECRET_KEY = SecretConfig.DJANGO_SECRET_KEY # Django密钥
 # DEBUG = config("DEBUG", cast=bool, default=True)
 # ENVIRONMENT = config("ENVIRONMENT", default="dev") # 当前运行环境类型
 # 允许的主机列表 Csv()用于将逗号分隔的字符串转换为列表
@@ -32,7 +27,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles', # 静态文件处理
-    # 'users' # 用户管理模块
+    'users' # 用户管理模块
 ]
 
 # --- 中间件配置 ---
@@ -75,11 +70,11 @@ CORS_ALLOW_CREDENTIALS = True # 允许携带cookie
 DATABASES = {
     'default': {
         "ENGINE": 'django.db.backends.mysql', # 数据库引擎
-        "NAME": config('DB_NAME', default='openai_chat_db'), # 数据库名称
-        "USER": config('DB_USER', default='root'), # 数据库用户名
-        "PASSWORD": MYSQL_PASSWORD, # 数据库密码
-        "HOST": config('DB_HOST', default='localhost'), # 数据库主机地址
-        "PORT": config('DB_PORT', default='3306'), # 数据库连接端口号
+        "NAME": get_config('DB_NAME', default='openai_chat_db'), # 数据库名称
+        "USER": get_config('DB_USER', default='root'), # 数据库用户名
+        "PASSWORD": SecretConfig.MYSQL_PASSWORD, # 数据库密码
+        "HOST": get_config('DB_HOST', default='localhost'), # 数据库主机地址
+        "PORT": get_config('DB_PORT', default='3306'), # 数据库连接端口号
         "OPTIONS": {
             'init_command':"SET sql_mode='STRICT_TRANS_TABLES'", # 初始化命令,设置SQL模式
             'charset': 'utf8mb4', # 字符集设置
@@ -92,10 +87,11 @@ DATABASES = {
 }
 
 # Redis缓存配置
-REDIS_HOST = config('REDIS_HOST', default='localhost') # Redis主机地址
-REDIS_PORT = config('REDIS_PORT', default='6379') # Redis主机端口号
+REDIS_HOST = get_config('REDIS_HOST', default='localhost') # Redis主机地址
+REDIS_PORT = get_config('REDIS_PORT', default='6379') # Redis主机端口号
+REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD
 
-CACHES = {
+CACHES = { # 缓存配置
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache', # 使用django-redis作为缓存后端
         'LOCATION': f'redis://{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1', # Redis连接地址
@@ -110,10 +106,11 @@ CACHES = {
 }
 
 # MongoDB配置
-MONGO_DB_NAME = config('MONGO_DB_NAME', default='openai_chat_db')
-MONGO_USER = config('MONGO_USER', default='root') # MongoDB用户名
-MONGO_HOST = config('MONGO_HOST', default='localhost') # MongoDB主机地址
-MONGO_PORT = config('MONGO_PORT', default='27017') # MongoDB主机端口号
+MONGO_DB_NAME = get_config('MONGO_DB_NAME', default='openai_chat_db')
+MONGO_USER = get_config('MONGO_USER', default='root') # MongoDB用户名
+MONGO_HOST = get_config('MONGO_HOST', default='localhost') # MongoDB主机地址
+MONGO_PORT = get_config('MONGO_PORT', default='27017') # MongoDB主机端口号
+MONGO_PASSWORD = SecretConfig.MONGO_PASSWORD # MongoDB密码
 
 MONGO_CONFIG = {
     'URI': f'mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}?authSource={MONGO_DB_NAME}', # MongoDB连接地址
