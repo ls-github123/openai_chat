@@ -3,7 +3,7 @@ from decouple import config
 from .azure_key_vault_client import AzureKeyVaultClient
 
 # 初始化日志记录器
-logger = logging.getLogger("openai_chat.settings.config")
+logger = logging.getLogger("openai_chat.settings.config")  # 根据模块名动态获取logger
 
 # === 工具方法:安全读取.env配置项 ===
 def get_config(key: str, default: str | None = None) -> str:
@@ -58,4 +58,4 @@ class SecretConfig:
 
 class VaultClient:
     """暴露Vault实例接口(特殊情况下直接使用)"""
-    isinstance = vault
+    instance = vault

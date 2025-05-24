@@ -7,6 +7,7 @@ from pathlib import Path
 from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
 from .azure_key_vault_client import AzureKeyVaultClient # 自定义的Azure Key Vault 客户端
 from pymongo import MongoClient # MongoDB客户端
+from openai_chat.settings.utils.logger_config import build_logging # 导入日志处理器模块封装
 
 # 基础目录
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # 项目根路径
@@ -141,110 +142,4 @@ USE_I18N = True # 启用Django国际化支持
 USE_TZ = True # 使用Django时区支持
 
 # 日志模块配置
-LOG_DIR = os.path.join(BASE_DIR, 'logs')
-os.makedirs(LOG_DIR, exist_ok=True) # 确保logs目录存在
-
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False, # False不禁用已有日志器(保留Django默认行为)
-    
-    # 日志格式化器配置
-    'formatters': {
-        'verbose': { # 详细格式: 时间、级别、模块名、日志内容
-            'format': '[{asctime}] [{levelname}] [{name}] {message}',
-            'style': '{', # 使用{号作为格式化标记
-        },
-        'simple': { # 简单格式: 只显示日志等级和内容,主要用于控制台输出
-            'format': '{levelname}: {message}',
-            'style': '{',
-        },
-    },
-    
-    # 日志处理器配置
-    'handlers': {
-        # 控制台输出处理器
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple', # 使用简单格式化器
-            'level': 'DEBUG', # 日志等级
-        },
-        
-        # 常规日志文件(记录所有info/debug级别日志)
-        'file_general':{
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'general.log'), # 日志文件路径
-            'maxBytes': 5 * 1024 * 1024, # 文件大小限制 5MB,超过后自动切割轮换
-            'backupCount': 3, # 保留的旧日志文件数量
-            'formatter': 'verbose', # 使用详细格式化器
-            'level': 'INFO', # 日志等级
-            'encoding': 'utf-8', # 日志文件编码
-        },
-        
-        # 错误日志文件(记录error及以上等级)
-        'file_error': {
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'errors.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': 'verbose',
-            'level': 'ERROR',
-            'encoding': 'utf-8',
-        },
-        
-        # Django内部日志文件(记录error及以上等级)
-        'file_django': {
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'django.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': 'verbose',
-            'level': 'INFO',
-            'encoding': 'utf-8',  
-        },
-    },
-    
-    # 日志生成器配置(模块 -> 处理器选择 -> 日志等级)
-    'loggers': {
-        # Django框架内部日志
-        'django': {
-            'handlers': ['console', 'file_django'],
-            'level': 'INFO',
-            'propagate': True, # 是否向上级日志器传播
-        },
-        
-        # 用户模块
-        'users': {
-            'handlers': ['console', 'file_general', 'file_error'],
-            'level': 'DEBUG',
-            'propagate': False,
-        },
-        
-        # Azure-Key-Vault密钥模块
-        'openai_chat.settings.azure_key_vault_client': {
-            'handlers': ['console', 'file_general','file_error'],
-            'level': 'DEBUG',
-            'propagate': False,
-        },
-        
-        # 项目主配置
-        'openai_chat.settings': {
-            'handlers': ['console', 'file_general', 'file_error'],
-            'level': 'INFO',
-            'propagate': False,  
-        },
-        
-        # 主入口模块(如asgi\wsgi)
-        'openai_chat':{
-            'handlers': ['console', 'file_general', 'file_error'],
-            'level': 'INFO',
-            'propagate': False, 
-        },
-        
-        # fallback:所有未显式配置模块
-        '': {
-            'handlers': ['console', 'file_general', 'file_error'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-    },
-}
+LOGGING = build_logging()

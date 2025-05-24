@@ -2,14 +2,14 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
-from decouple import config
+from openai_chat.settings.config import get_config
 
 def main():
     """Run administrative tasks."""
     # 动态设置Django配置模块,默认加载dev环境配置
     os.environ.setdefault(
         'DJANGO_SETTINGS_MODULE',
-        config('DJANGO_SETTINGS_MODULE', default='openai_chat.settings.dev')
+        get_config('DJANGO_SETTINGS_MODULE', default='openai_chat.settings.dev')
     )
     try:
         from django.core.management import execute_from_command_line
