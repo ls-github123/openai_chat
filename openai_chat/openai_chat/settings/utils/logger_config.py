@@ -2,7 +2,7 @@
 # 封装为 get_logging() 方法供 base.py 调用
 import os
 from pathlib import Path
-from logging.handlers import RotatingFileHandler # 日志文件轮换处理器
+from concurrent_log_handler import ConcurrentRotatingFileHandler # 多进程安全写入日志
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -31,7 +31,7 @@ def build_logging():
     # 将日志输出到指定位置
     handlers = {
         'file_debug': { # DEBUG 日志:记录调试细节
-            'class': 'logging.handlers.RotatingFileHandler', # 支持自动轮转的文件日志处理器
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', # 支持自动轮转的文件日志处理器
             'filename': os.path.join(LOG_DIR, 'debug.log'), # 输出文件路径
             'maxBytes': 5 * 1024 * 1024, # 单个日志文件最大为5MB
             'backupCount': 3, # 最多保留3个轮转文件 
@@ -40,7 +40,7 @@ def build_logging():
             'encoding': 'utf-8',
 		},
         'file_info': { # INFO 日志:记录正常流程信息(用户登录、接口访问成功等)
-            'class': 'logging.handlers.RotatingFileHandler', 
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
             'filename': os.path.join(LOG_DIR, 'info.log'), 
             'maxBytes': 5 * 1024 *1024, 
             'backupCount': 3, 
@@ -49,7 +49,7 @@ def build_logging():
             'encoding': 'utf-8',
 		},
         'file_warning': { # WARNING 日志:记录可恢复问题、潜在风险(如参数不合法、网络重试)
-            'class': 'logging.handlers.RotatingFileHandler', 
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
             'filename': os.path.join(LOG_DIR, 'warning.log'), 
             'maxBytes': 5 * 1024 *1024, 
             'backupCount': 3, 
@@ -58,7 +58,7 @@ def build_logging():
             'encoding': 'utf-8',
 		},
         'file_error': { # ERROR 日志:记录错误异常(如数据库连接失败、调用异常)
-            'class': 'logging.handlers.RotatingFileHandler',
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'errors.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
@@ -67,7 +67,7 @@ def build_logging():
             'encoding': 'utf-8',
 		},
         'file_critical': { # CRITICAL 日志: 记录系统致命错误(如主线程崩溃、密钥加载失败等)
-            'class': 'logging.handlers.RotatingFileHandler',
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'critical.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
@@ -76,7 +76,7 @@ def build_logging():
             'encoding': 'utf-8',
 		},
         'file_django': { # DJANGO框架 日志
-            'class': 'logging.handlers.RotatingFileHandler',
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'django.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
