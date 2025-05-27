@@ -1,6 +1,6 @@
 # 日志模块封装
 # 封装为 get_logging() 方法供 base.py 调用
-import os
+import os, logging
 from pathlib import Path
 from concurrent_log_handler import ConcurrentRotatingFileHandler # 并发日志处理模块-多进程安全写入日志
 
@@ -10,13 +10,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = os.path.join(BASE_DIR, 'logs') # 日志目录
 os.makedirs(LOG_DIR, exist_ok=True) # 创建日志目录(如果不存在)
 
-# 判断是否启用控制台日志输出
+# === 环境判定与格式器策略 ===
 DJANGO_SETTINGS_MODULE = os.getenv('DJANGO_SETTINGS_MODULE', 'openai_chat.settings.dev') # 获取当前环境变量
-ENABLE_CONSOLE_LOGGING = "dev" in DJANGO_SETTINGS_MODULE.lower() # 开发环境下启用控制台输出
+IS_DEV = "dev" in DJANGO_SETTINGS_MODULE.lower() # 判断是否为开发环境
+# 开发环境使用详细化格式器, 生产环境使用 JSON 格式器
+FORMATTER_STYLE = 'verbose' if IS_DEV else 'json'
+ENABLE_CONSOLE_LOGGING = IS_DEV # 开发环境下启用控制台日志
 
 def build_logging():
     """
     返回符合 Django Logging 配置规范的字典结构
+    (日志处理器-handlers、日志格式化器-formatters、日志生成器-loggers)
+    - 日志配置说明:
     - 控制台输出(仅开发环境)
     - 文件输出(general/info/error/critical/django)
     - 各类日志按级别分类持久化
@@ -30,57 +35,84 @@ def build_logging():
     # === 日志处理器 ===
     # 将日志输出到指定位置
     handlers = {
-        'file_debug': { # DEBUG 日志:记录调试细节
+        'file_debug': { # DEBUG 级别日志:记录调试细节
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', # 支持自动轮转的文件日志处理器
             'filename': os.path.join(LOG_DIR, 'debug.log'), # 输出文件路径
             'maxBytes': 5 * 1024 * 1024, # 单个日志文件最大为5MB
             'backupCount': 3, # 最多保留3个轮转文件 
-            'formatter': 'verbose', # 使用详细格式化器
+            'formatter': FORMATTER_STYLE, # 格式化器选择
             'level': 'DEBUG',
             'encoding': 'utf-8',
 		},
-        'file_info': { # INFO 日志:记录正常流程信息(用户登录、接口访问成功等)
+        'file_info': { # INFO 级别日志:记录正常流程信息(用户登录、接口访问成功等)
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
             'filename': os.path.join(LOG_DIR, 'info.log'), 
             'maxBytes': 5 * 1024 *1024, 
             'backupCount': 3, 
-            'formatter': 'verbose', 
+            'formatter': FORMATTER_STYLE, 
             'level': 'INFO',
             'encoding': 'utf-8',
 		},
-        'file_warning': { # WARNING 日志:记录可恢复问题、潜在风险(如参数不合法、网络重试)
+        'file_warning': { # WARNING 级别日志:记录可恢复问题、潜在风险(如参数不合法、网络重试)
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
             'filename': os.path.join(LOG_DIR, 'warning.log'), 
             'maxBytes': 5 * 1024 *1024, 
             'backupCount': 3, 
-            'formatter': 'verbose', 
+            'formatter': FORMATTER_STYLE,
             'level': 'WARNING',
             'encoding': 'utf-8',
 		},
-        'file_error': { # ERROR 日志:记录错误异常(如数据库连接失败、调用异常)
+        'file_error': { # ERROR 级别日志:记录错误异常(如数据库连接失败、调用异常)
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'errors.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
-            'formatter': 'verbose',
+            'formatter': FORMATTER_STYLE,
             'level': 'ERROR',
             'encoding': 'utf-8',
 		},
-        'file_critical': { # CRITICAL 日志: 记录系统致命错误(如主线程崩溃、密钥加载失败等)
+        'file_critical': { # CRITICAL 级别日志: 记录系统致命错误(如主线程崩溃、密钥加载失败等)
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'critical.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
-            'formatter': 'verbose',
+            'formatter': FORMATTER_STYLE,
             'level': 'CRITICAL',
             'encoding': 'utf-8',
 		},
-        'file_django': { # DJANGO框架 日志
+        'file_db_mysql': { # Mysql数据库 日志
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'db_mysql.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': FORMATTER_STYLE,
+            'level': 'DEBUG', # DEBUG 记录SQL查询, INFO 记录业务层日志
+            'encoding': 'utf-8',
+        },
+        'file_db_redis': { # Redis缓存数据库 日志
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'db_redis.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': FORMATTER_STYLE,
+            'level': 'INFO',
+            'encoding': 'utf-8',
+        },
+        'file_db_mongo': { # MongoDB数据库 日志
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'db_mongo.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': FORMATTER_STYLE,
+            'level': 'INFO',
+            'encoding': 'utf-8',
+        },
+        'file_django': { # Django框架本体 日志
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'django.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
-            'formatter': 'verbose',
+            'formatter': FORMATTER_STYLE,
             'level': 'INFO',
             'encoding': 'utf-8',
 		},
@@ -94,15 +126,16 @@ def build_logging():
             'formatter': 'simple', # 输出简单格式
             'level': 'DEBUG',
 		}
-    
-    # 汇总所有 handler
+    # fallback logger 收集所有输出器
     logger_handlers = list(handlers.keys())
     
+    # === 日志返回结构体配置 ===
     return {
         'version': 1,
-        'disable_existing_loggers': False,  # 保留 Django 默认日志器
+        'disable_existing_loggers': False,  # 禁用现有日志记录器(避免重复配置)
         
         # === 日志格式化器 ===
+        # verbose 文本格式、simple 简单文本格式、json JSON格式
         'formatters': {
             'verbose': { # 详细格式: 时间、级别、模块名、日志内容
                 'format': '[{asctime}] [{levelname}] [{name}] {message}',
@@ -112,11 +145,16 @@ def build_logging():
                 'format': '{levelname}: {message}',
                 'style': '{',
             },
+            'json': { # JSON格式: 适用于生产环境,便于日志分析
+                # 使用 jsonlogger 库格式化日志为 JSON
+                '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
+                'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+            },
         },
+        # 日志处理器集合(输出位置 -> 格式化器选择)
+        'handlers': handlers,
         
-        'handlers': handlers, # 日志处理器(输出方式)
-        
-        # 日志生成器配置(模块 -> 处理器选择 -> 日志等级)
+        # 各模块日志记录器配置(按模块分配日志处理器)
         'loggers': {
             'django': { # # Django框架日志
                 # 控制台和错误日志处理器
@@ -149,10 +187,38 @@ def build_logging():
                'level': 'DEBUG',
                'propagate': False,
            },
+           'project.redis': { # Redis缓存数据库日志
+               'handlers': ['file_db_redis'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'project.mongo': { # MongoDB数据模块日志
+               'handlers': ['file_db_mongo'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'project.mysql': { # Mysql数据库业务日志(连接失败、事务异常等)
+               'handlers': ['file_db_mysql'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'django.db.backends': { # Mysql ORM 日志
+                'handlers': ['file_db_mysql'],
+                'level': 'DEBUG',
+                'propagate': False,
+            },
            '': { # fallback 根 logger(通用日志)
-                'handlers': logger_handlers,
+                'handlers': ['file_info', 'file_warning'],
                 'level': 'INFO',
                 'propagate': False,
            },
         },
     }
+    
+# === 通用日志获取函数 ===
+def get_logger(name: str) -> logging.Logger:
+    """
+    获取指定名称的日志记录器(loggers)
+    示例: mysql_logger = get_logger("project.mysql")
+    """
+    return logging.getLogger(name)
