@@ -2,7 +2,7 @@
 # 封装为 get_logging() 方法供 base.py 调用
 import os
 from pathlib import Path
-from concurrent_log_handler import ConcurrentRotatingFileHandler # 多进程安全写入日志
+from concurrent_log_handler import ConcurrentRotatingFileHandler # 并发日志处理模块-多进程安全写入日志
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 

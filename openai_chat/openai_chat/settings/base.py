@@ -127,7 +127,7 @@ mongo_client = MongoClient(
 mongo_db = mongo_client.get_database(MONGO_DB_NAME) # type: ignore # 获取MongoDB数据库实例
 
 # 密码强度验证器配置
-AUTH_PASSWORD_VALIDATORS = [] # 
+AUTH_PASSWORD_VALIDATORS = []
 
 # 静态与媒体资源
 STATIC_URL = '/static/' # 静态文件URL前缀
