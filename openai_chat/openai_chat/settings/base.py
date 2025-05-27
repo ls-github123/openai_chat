@@ -11,7 +11,7 @@ from pathlib import Path
 from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
 from .azure_key_vault_client import AzureKeyVaultClient # 自定义的Azure Key Vault 客户端
 from pymongo import MongoClient # MongoDB客户端
-from openai_chat.settings.utils.logger_config import build_logging # 导入日志处理器模块封装
+from openai_chat.settings.utils.logging.logger_config import build_logging # 导入日志处理器模块封装
 
 # 基础目录
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # 项目根路径
