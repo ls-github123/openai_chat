@@ -1,14 +1,12 @@
 # 日志模块封装
 # 封装为 get_logging() 方法供 base.py 调用
 import os, logging
-from pathlib import Path
+from openai_chat.settings.utils.path_utils import BASE_DIR
 from concurrent_log_handler import ConcurrentRotatingFileHandler # 并发日志处理模块-多进程安全写入日志
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-
 # 日志目录路径
-LOG_DIR = os.path.join(BASE_DIR, 'logs') # 日志目录
-os.makedirs(LOG_DIR, exist_ok=True) # 创建日志目录(如果不存在)
+LOG_DIR = BASE_DIR / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True) # 创建日志目录(如果不存在)
 
 # === 环境判定与格式器策略 ===
 DJANGO_SETTINGS_MODULE = os.getenv('DJANGO_SETTINGS_MODULE', 'openai_chat.settings.dev') # 获取当前环境变量
@@ -47,9 +45,9 @@ def build_logging():
         'file_info': { # INFO 级别日志:记录正常流程信息(用户登录、接口访问成功等)
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
             'filename': os.path.join(LOG_DIR, 'info.log'), 
-            'maxBytes': 5 * 1024 *1024, 
+            'maxBytes': 5 * 1024 *1024,
             'backupCount': 3, 
-            'formatter': FORMATTER_STYLE, 
+            'formatter': FORMATTER_STYLE,
             'level': 'INFO',
             'encoding': 'utf-8',
 		},
