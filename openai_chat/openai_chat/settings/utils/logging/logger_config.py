@@ -105,6 +105,33 @@ def build_logging():
             'level': 'INFO',
             'encoding': 'utf-8',
         },
+        'file_lock_redlock': { # Redlock分布式锁 日志
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'lock_redlock.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': FORMATTER_STYLE,
+            'level': 'INFO',
+            'encoding': 'utf-8',
+        },
+        'file_lock_redis': { # Redis单节点锁 日志
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'lock_redis.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': FORMATTER_STYLE,
+            'level': 'INFO',
+            'encoding': 'utf-8',
+        },
+        'file_lock_redis_config': { # Redis锁模块客户端配置 日志
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'lock_redis_config.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'formatter': FORMATTER_STYLE,
+            'level': 'INFO',
+            'encoding': 'utf-8',
+        },
         'file_django': { # Django框架本体 日志
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'django.log'),
@@ -158,7 +185,7 @@ def build_logging():
                 # 控制台和错误日志处理器
                 'handlers': ['file_django'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                 'level': 'INFO', # 级别过滤(低于该级别的日志将被排除)
-                'propagate': True,
+                'propagate': True, # 是否向父 logger 传播日志
             },
            'openai_chat': { # 主业务日志
                 'handlers': logger_handlers,
@@ -204,6 +231,21 @@ def build_logging():
                 'handlers': ['file_db_mysql'],
                 'level': 'DEBUG',
                 'propagate': False,
+            },
+           'project.redlock': { # Redlock分布式锁 日志
+               'handlers': ['file_lock_redlock'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'project.redis_lock': { # Redis单节点锁 日志
+               'handlers': ['file_lock_redis'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'project.lock.redis_config': { # Redis锁模块客户端配置 日志
+               'handlers': ['file_lock_redis_config'],
+               'level': 'INFO',
+               'propagate': False,
             },
            '': { # fallback 根 logger(通用日志)
                 'handlers': ['file_info', 'file_warning'],
