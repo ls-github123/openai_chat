@@ -2,12 +2,12 @@
 Azure Key Vault 客户端封装
 用于安全地从 Azure Key Vault 中读取密钥，且自动缓存读取结果
 """
-import logging # 导入日志模块
+from openai_chat.settings.utils.logging import get_logger # 导入日志模块
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.core.exceptions import ResourceNotFoundError, HttpResponseError # 导入异常处理类
 
-logger = logging.getLogger(__name__) # 创建日志记录器-根据模块名动态获取logger
+logger = get_logger("openai_chat.settings.azure_key_vault_client")
 
 class AzureKeyVaultClient:
     def __init__(self, vault_url: str):
@@ -38,16 +38,16 @@ class AzureKeyVaultClient:
             self._cache[secret_name] = secret # 缓存 Secret
             return secret # 返回 Secret 的值
         
-        except ResourceNotFoundError:
-            logger.error(f"[Azure-Key-Vault] Secret not found:{secret_name}")
+        except ResourceNotFoundError: # 未找到指定的 Secret
+            logger.critical(f"[Azure-Key-Vault] Secret not found:{secret_name}")
             raise Exception(f"[Azure-Key-Vault]未找到密钥:{secret_name}") # 如果未找到,抛出异常
         
-        except HttpResponseError as e:
-            logger.error(f"[Azure-Key-Vault] 请求失败:{secret_name}, 状态码:{e.status_code}")
+        except HttpResponseError as e: # HTTP 响应错误,例如权限不足或请求格式错误
+            logger.critical(f"[Azure-Key-Vault] 请求失败:{secret_name}, 状态码:{e.status_code}")
             raise Exception(f"[Azure-Key-Vault] 获取密钥失败:{secret_name}, 状态码:{e.status_code}")
         
-        except Exception as e:
-            logger.exception(f"[Azure-Key-Vault] 获取密钥失败:{secret_name}, 原因:{str(e)}")
+        except Exception as e: 
+            logger.error(f"[Azure-Key-Vault] 获取密钥失败:{secret_name}, 原因:{str(e)}")
             raise
     
     def refresh_secret(self, secret_name: str) -> str:
@@ -64,5 +64,5 @@ class AzureKeyVaultClient:
             self._cache[secret_name] = latest_secret # 更新缓存
             return latest_secret # 返回最新密钥值
         except Exception:
-            logger.exception(f"[Azure-Key-Vault] 刷新密钥失败: {secret_name}, 尝试使用本地缓存值")
+            logger.error(f"[Azure-Key-Vault] 刷新密钥失败: {secret_name}, 尝试使用本地缓存值")
             return self.get_secret(secret_name) # 如果刷新失败,尝试从缓存获取

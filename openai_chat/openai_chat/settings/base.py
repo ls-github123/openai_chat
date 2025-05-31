@@ -10,7 +10,7 @@ import os
 from openai_chat.settings.utils import path_utils # 导入路径工具模块
 from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
 from pymongo import MongoClient # MongoDB客户端
-from openai_chat.settings.utils.logging import build_logging # 导入日志处理器模块封装
+from . import LOGGING # 导入日志配置
 
 # 基础目录
 BASE_DIR = path_utils.BASE_DIR # 项目根路径
@@ -159,6 +159,3 @@ LANGUAGE_CODE = 'zh-hans' # 语言设置
 TIME_ZONE = 'Asia/shanghai' # 时区设置
 USE_I18N = True # 启用Django国际化支持
 USE_TZ = True # 使用Django时区支持
-
-# === 日志模块配置 ===
-LOGGING = build_logging() # 调用封装的日志模块函数

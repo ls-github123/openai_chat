@@ -5,7 +5,7 @@ from openai_chat.settings.utils.path_utils import BASE_DIR
 from concurrent_log_handler import ConcurrentRotatingFileHandler # 并发日志处理模块-多进程安全写入日志
 
 # 日志目录路径
-LOG_DIR = BASE_DIR / 'logs'
+LOG_DIR = (BASE_DIR / 'logs').resolve() # 确保路径为绝对路径
 LOG_DIR.mkdir(parents=True, exist_ok=True) # 创建日志目录(如果不存在)
 
 # === 环境判定与格式器策略 ===
@@ -30,6 +30,10 @@ def build_logging():
     - -(ERROR-系统较大错误问题信息)
     - -(CRITICAL-系统致命错误问题信息)
     """
+    # 检查缓存是否存在
+    if hasattr(build_logging, "_cache"):
+        return build_logging._cache # type: ignore
+    
     # === 日志处理器 ===
     # 将日志输出到指定位置
     handlers = {
@@ -102,7 +106,7 @@ def build_logging():
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 3,
             'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
+            'level': 'ERROR',
             'encoding': 'utf-8',
         },
         'file_lock_redlock': { # Redlock分布式锁 日志
@@ -145,6 +149,7 @@ def build_logging():
     
     # 控制台输出处理器(仅开发环境启用)
     if ENABLE_CONSOLE_LOGGING:
+        print("[Logger]开启开发环境控制台日志输出")
         handlers['console'] = {
             # StreamHandler-python标准日志库内置处理器,用于开发调试阶段
             'class': 'logging.StreamHandler',
@@ -155,9 +160,9 @@ def build_logging():
     logger_handlers = list(handlers.keys())
     
     # === 日志返回结构体配置 ===
-    return {
+    config = {
         'version': 1,
-        'disable_existing_loggers': False,  # 禁用现有日志记录器(避免重复配置)
+        'disable_existing_loggers': False,  # 保留已有模块日志
         
         # === 日志格式化器 ===
         # verbose 文本格式、simple 简单文本格式、json JSON格式
@@ -173,7 +178,12 @@ def build_logging():
             'json': { # JSON格式: 适用于生产环境,便于日志分析
                 # 使用 jsonlogger 库格式化日志为 JSON
                 '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
-                'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+                'format': '%(asctime)s %(levelname)s %(name)s %(process)d %(threadName)s %(message)s',
+                'rename_fields': { # 重命名字段以符合 JSON 格式
+                    'levelname': 'level',
+                    'asctime': 'timestamp',
+                    'name': 'logger',
+                },
             },
         },
         # 日志处理器集合(输出位置 -> 格式化器选择)
@@ -192,23 +202,28 @@ def build_logging():
                 'level': 'DEBUG',
                 'propagate': False,
            },
+           'openai_chat.settings.config': { # 配置模块日志
+                'handlers': ['file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+                'level': 'WARNING',
+                'propagate': False,
+            },
            'openai_chat.users': { # 用户模块日志(注册、登录等操作)
-               'handlers': ['file_debug', 'file_info', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'handlers': ['file_debug', 'file_info','file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'DEBUG',
                'propagate': False,
 		   },
            'openai_chat.settings.azure_key_vault_client': { # Azure key vault 模块日志
-               'handlers': ['file_info', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'handlers': ['file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'WARNING',
                'propagate': False,
 		   },
            'openai_chat.chat': { # chat聊天模块日志
-               'handlers': ['file_info', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'INFO',
+               'handlers': ['file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'level': 'WARNING',
                'propagate': False,
            },
            'openai_chat.api': { # API模块日志
-               'handlers': ['file_debug', 'file_warning', 'file_error'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'handlers': ['file_debug', 'file_info', 'file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'DEBUG',
                'propagate': False,
            },
@@ -219,7 +234,12 @@ def build_logging():
             },
            'project.mongo': { # MongoDB数据模块日志
                'handlers': ['file_db_mongo'],
-               'level': 'INFO',
+               'level': 'ERROR',
+               'propagate': False,
+            },
+           'pymongo': { # MongoDB ORM 日志
+               'handlers': ['file_db_mongo'],
+               'level': 'ERROR',
                'propagate': False,
             },
            'project.mysql': { # Mysql数据库业务日志(连接失败、事务异常等)
@@ -248,17 +268,24 @@ def build_logging():
                'propagate': False,
             },
            '': { # fallback 根 logger(通用日志)
-                'handlers': ['file_info', 'file_warning'],
+                'handlers': ['file_debug', 'file_info', 'file_warning', 'file_error', 'file_critical'],
                 'level': 'INFO',
                 'propagate': False,
            },
         },
     }
-    
+    # 缓存写入(避免重复初始化)
+    build_logging._cache = config  # type: ignore
+    return config
+
 # === 通用日志获取函数 ===
 def get_logger(name: str) -> logging.Logger:
     """
     获取指定名称的日志记录器(loggers)
     示例: mysql_logger = get_logger("project.mysql")
+    注:若未注册则使用 fallback 配置
     """
-    return logging.getLogger(name)
+    logger = logging.getLogger(name) # 获取指定名称的日志记录器
+    if not logger.handlers: # 如果没有处理器,则使用默认处理器
+        logger.handlers = logging.getLogger('').handlers
+    return logger

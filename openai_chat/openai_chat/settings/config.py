@@ -1,9 +1,9 @@
-import logging
+from openai_chat.settings.utils.logging import get_logger
 from decouple import config
 from .azure_key_vault_client import AzureKeyVaultClient
 
 # 初始化日志记录器
-logger = logging.getLogger("openai_chat.settings.config")  # 根据模块名动态获取logger
+logger = get_logger("openai_chat.settings.config")
 
 # === 工具方法:安全读取.env配置项 ===
 def get_config(key: str, default: str | None = None) -> str:
