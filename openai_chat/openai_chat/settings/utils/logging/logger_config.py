@@ -1,5 +1,7 @@
-# 日志模块封装
-# 封装为 get_logging() 方法供 base.py 调用
+"""
+日志模块封装：构建多级别日志系统，支持控制台输出、文件输出、多模块分级管理
+支持：并发安全、滚动日志、多数据库/业务/锁模块分离、自定义格式器、开发/生产环境切换
+"""
 import os, logging
 from openai_chat.settings.utils.path_utils import BASE_DIR
 from concurrent_log_handler import ConcurrentRotatingFileHandler # 并发日志处理模块-多进程安全写入日志
@@ -33,118 +35,34 @@ def build_logging():
     # 检查缓存是否存在
     if hasattr(build_logging, "_cache"):
         return build_logging._cache # type: ignore
+
+    # 文件日志处理器生成函数
+    def file_handler(name, level):
+        return {
+            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', # 支持自动轮转的文件日志处理器
+            'filename': os.path.join(LOG_DIR, f'{name}.log'), # 输出文件路径
+            'maxBytes': 5 * 1024 * 1024, # 单个日志文件最大容量
+            'backupCount': 3, # 最多保留3个轮转文件
+            'formatter': FORMATTER_STYLE, # 格式化器选择
+            'level': level, # 日志级别
+            'encoding': 'utf-8', # 文件编码
+        }
     
     # === 日志处理器 ===
     # 将日志输出到指定位置
     handlers = {
-        'file_debug': { # DEBUG 级别日志:记录调试细节
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', # 支持自动轮转的文件日志处理器
-            'filename': os.path.join(LOG_DIR, 'debug.log'), # 输出文件路径
-            'maxBytes': 5 * 1024 * 1024, # 单个日志文件最大为5MB
-            'backupCount': 3, # 最多保留3个轮转文件 
-            'formatter': FORMATTER_STYLE, # 格式化器选择
-            'level': 'DEBUG',
-            'encoding': 'utf-8',
-		},
-        'file_info': { # INFO 级别日志:记录正常流程信息(用户登录、接口访问成功等)
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
-            'filename': os.path.join(LOG_DIR, 'info.log'), 
-            'maxBytes': 5 * 1024 *1024,
-            'backupCount': 3, 
-            'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
-            'encoding': 'utf-8',
-		},
-        'file_warning': { # WARNING 级别日志:记录可恢复问题、潜在风险(如参数不合法、网络重试)
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', 
-            'filename': os.path.join(LOG_DIR, 'warning.log'), 
-            'maxBytes': 5 * 1024 *1024, 
-            'backupCount': 3, 
-            'formatter': FORMATTER_STYLE,
-            'level': 'WARNING',
-            'encoding': 'utf-8',
-		},
-        'file_error': { # ERROR 级别日志:记录错误异常(如数据库连接失败、调用异常)
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'errors.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'ERROR',
-            'encoding': 'utf-8',
-		},
-        'file_critical': { # CRITICAL 级别日志: 记录系统致命错误(如主线程崩溃、密钥加载失败等)
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'critical.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'CRITICAL',
-            'encoding': 'utf-8',
-		},
-        'file_db_mysql': { # Mysql数据库 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'db_mysql.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'DEBUG', # DEBUG 记录SQL查询, INFO 记录业务层日志
-            'encoding': 'utf-8',
-        },
-        'file_db_redis': { # Redis缓存数据库 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'db_redis.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
-            'encoding': 'utf-8',
-        },
-        'file_db_mongo': { # MongoDB数据库 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'db_mongo.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'ERROR',
-            'encoding': 'utf-8',
-        },
-        'file_lock_redlock': { # Redlock分布式锁 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'lock_redlock.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
-            'encoding': 'utf-8',
-        },
-        'file_lock_redis': { # Redis单节点锁 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'lock_redis.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
-            'encoding': 'utf-8',
-        },
-        'file_lock_redis_config': { # Redis锁模块客户端配置 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'lock_redis_config.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
-            'encoding': 'utf-8',
-        },
-        'file_django': { # Django框架本体 日志
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'django.log'),
-            'maxBytes': 5 * 1024 * 1024,
-            'backupCount': 3,
-            'formatter': FORMATTER_STYLE,
-            'level': 'INFO',
-            'encoding': 'utf-8',
-		},
+        'file_project': file_handler('project', 'DEBUG'), # 项目通用日志
+        'file_project_config': file_handler('project_config', 'INFO'), # 项目配置 日志
+        'file_azure_key_vault': file_handler('azure_key_vault', 'WARNING'), # Azure Key Vault 日志
+        'file_db_mysql': file_handler('db_mysql', 'INFO'), # Mysql数据库 日志
+        'file_db_redis': file_handler('db_redis', 'INFO'), # Redis缓存数据库 日志
+        'file_db_mongo': file_handler('db_mongo', 'INFO'), # MongoDB数据库 日志
+        'file_lock': file_handler('lock', 'DEBUG'), # Redis锁 日志
+        'file_django': file_handler('django', 'INFO'), # Django框架本体 日志
+        'file_snowflake': file_handler('snowflake', 'WARNING'), # snowflake分布式ID生成 日志
+        'file_api': file_handler('api', 'WARNING'), # API模块 日志
+        'file_users': file_handler('users', 'DEBUG'), # 用户模块 日志
+        'file_chat': file_handler('chat', 'WARNING'), # chat聊天模块 日志'
 	}
     
     # 控制台输出处理器(仅开发环境启用)
@@ -203,43 +121,73 @@ def build_logging():
                 'propagate': False,
            },
            'openai_chat.settings.config': { # 配置模块日志
-                'handlers': ['file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-                'level': 'WARNING',
+                'handlers': ['file_project_config'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+                'level': 'INFO',
                 'propagate': False,
             },
            'openai_chat.users': { # 用户模块日志(注册、登录等操作)
-               'handlers': ['file_debug', 'file_info','file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'handlers': ['file_users'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'DEBUG',
                'propagate': False,
 		   },
            'openai_chat.settings.azure_key_vault_client': { # Azure key vault 模块日志
-               'handlers': ['file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'handlers': ['file_azure_key_vault'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'WARNING',
                'propagate': False,
 		   },
            'openai_chat.chat': { # chat聊天模块日志
-               'handlers': ['file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'handlers': ['file_chat'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'WARNING',
                'propagate': False,
            },
-           'openai_chat.api': { # API模块日志
-               'handlers': ['file_debug', 'file_info', 'file_warning', 'file_error', 'file_critical'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+           'openai.api': { # OPENAI-API模块日志
+               'handlers': ['file_api'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'DEBUG',
                'propagate': False,
            },
-           'project.redis': { # Redis缓存数据库日志
+           'project.api': { # 项目API模块日志
+               'handlers': ['file_api'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'level': 'DEBUG',
+               'propagate': False,
+            },
+           'project.redis': { # Djano-Redis缓存后端 日志
                'handlers': ['file_db_redis'],
+               'level': 'WARNING',
+               'propagate': False,
+            },
+           'project.redlock': { # Redlock分布式锁 日志
+               'handlers': ['file_lock'],
+               'level': 'DEBUG',
+               'propagate': False,
+            },
+           'project.lock_factory': { # 锁工厂函数接口模块 日志
+               'handlers': ['file_lock'],
+               'level': 'DEBUG',
+               'propagate': False,
+            },
+           'project.redis_lock': { # Redis单节点锁 日志
+               'handlers': ['file_lock'],
+               'level': 'DEBUG',
+               'propagate': False,
+            },
+           'project.redis_config': { # Redis客户端、连接池、连接状态 日志
+               'handlers': ['file_db_redis'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'INFO',
+               'propagate': False,
+            },
+           'project.snowflake.register': { # Snowflake分布式节点ID注册 日志
+               'handlers': ['file_snowflake'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'level': 'WARNING',
                'propagate': False,
             },
            'project.mongo': { # MongoDB数据模块日志
                'handlers': ['file_db_mongo'],
-               'level': 'ERROR',
+               'level': 'INFO',
                'propagate': False,
             },
            'pymongo': { # MongoDB ORM 日志
                'handlers': ['file_db_mongo'],
-               'level': 'ERROR',
+               'level': 'INFO',
                'propagate': False,
             },
            'project.mysql': { # Mysql数据库业务日志(连接失败、事务异常等)
@@ -249,26 +197,16 @@ def build_logging():
             },
            'django.db.backends': { # Mysql ORM 日志
                 'handlers': ['file_db_mysql'],
-                'level': 'DEBUG',
+                'level': 'INFO',
                 'propagate': False,
             },
-           'project.redlock': { # Redlock分布式锁 日志
-               'handlers': ['file_lock_redlock'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'project.redis_lock': { # Redis单节点锁 日志
-               'handlers': ['file_lock_redis'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'project.lock.redis_config': { # Redis锁模块客户端配置 日志
-               'handlers': ['file_lock_redis_config'],
-               'level': 'INFO',
+           'project.users': { # 用户模块日志(注册、登录等操作)
+               'handlers': ['file_users'],
+               'level': 'DEBUG',
                'propagate': False,
             },
            '': { # fallback 根 logger(通用日志)
-                'handlers': ['file_debug', 'file_info', 'file_warning', 'file_error', 'file_critical'],
+                'handlers': ['file_project'],
                 'level': 'INFO',
                 'propagate': False,
            },

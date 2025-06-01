@@ -92,11 +92,11 @@ DATABASES = {
 }
 
 # === Redis缓存配置 ===
-REDIS_HOST = get_config('REDIS_HOST', default='localhost') # Redis主机地址
+REDIS_HOST = get_config('REDIS_HOST', default='127.0.0.1') # Redis主机地址
 REDIS_PORT = get_config('REDIS_PORT', default='6379') # Redis主机端口号
-REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD
+REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD # Redis连接密码
 
-CACHES = { # 缓存配置
+CACHES = { # Django缓存配置
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache', # 使用django-redis作为缓存后端
         'LOCATION': f'redis://{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1', # Redis连接地址

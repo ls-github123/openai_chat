@@ -32,14 +32,14 @@ class RedLockWrapper(BaseLock):
             lock_result = self.redlock.lock(self.key, self.ttl) # 尝试获取锁
             if lock_result: # 成功获取锁
                 self._lock = lock_result # 保存锁对象
-                logger.info(f"[RedLock] Acquired lock: {self.key} with TTL: {self.ttl}ms") # 记录获取锁成功
+                logger.info(f"[RedLock] 获取锁成功: {self.key} with TTL: {self.ttl}ms") # 记录获取锁成功
                 return True
             else:
                 self._lock = None # 获取锁失败
-                logger.warning(f"[RedLock] Failed to acquire lock: {self.key} after {self.ttl}ms") # 记录获取锁失败
+                logger.warning(f"[RedLock] 获取锁失败: {self.key} after {self.ttl}ms") # 记录获取锁失败
                 return False
         except Exception as e: # 捕获异常
-            logger.error(f"[RedLock] Exception acquiring lock {self.key}: {e}") # 记录异常信息
+            logger.error(f"[RedLock] 获取锁异常: {self.key}: {e}") # 记录异常信息
             return False
     
     def release(self):
@@ -49,18 +49,20 @@ class RedLockWrapper(BaseLock):
         try:
             if self._lock:
                 self.redlock.unlock(self._lock) # 释放锁
-                logger.info(f"[RedLock] Released lock: {self.key}") # 记录释放锁成功
+                logger.info(f"[RedLock] 释放锁成功: {self.key}") # 记录释放锁成功
         except Exception as e: 
-            logger.error(f"[RedLock] Exception releasing lock {self.key}: {e}") # 记录释放锁异常信息
-            
+            logger.error(f"[RedLock] 释放锁异常: {self.key}: {e}") # 记录释放锁异常信息
+        finally:
+            self._lock = None # 确保锁对象被清空
+
     def lock(self): # 上下文管理器接口实现
         """
         获取当前锁
         """
         from contextlib import contextmanager # 上下文管理器
-        
+
         @contextmanager
-        def _lock(): # 上下文管理器封装
+        def _lock_context(): # 上下文管理器封装
             try:
                 if self.acquire():
                     try:
@@ -72,4 +74,4 @@ class RedLockWrapper(BaseLock):
             except Exception as e:
                 logger.error(f"[RedLock] Lock context error: {e}") # 记录上下文管理器异常信息
                 yield False
-        return _lock() # 返回上下文管理器实例
+        return _lock_context() # 返回上下文管理器实例
