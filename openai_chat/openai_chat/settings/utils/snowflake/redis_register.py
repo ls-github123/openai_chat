@@ -1,6 +1,11 @@
 from openai_chat.settings.utils.logging import get_logger # 日志记录器
+import os
 from typing import Optional # 可选类型提示
 logger = get_logger("project.snowflake.register")
+
+# 自动检测是否为开发环境(开发环境启用容错模式)
+IS_DEV = "dev" in os.getenv("DJANGO_SETTINGS_MODULE", "").lower() # 返回True或False
+ALLOW_CLOCK_BACKWARD = IS_DEV # 开发环境返回True,运行时允许时钟回拨(容错模式)
 
 class RedisNodeRegister:
     """

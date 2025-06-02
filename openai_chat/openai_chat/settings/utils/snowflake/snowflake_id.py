@@ -70,8 +70,12 @@ def get_snowflake_id():
     :return: 64位整型ID
     """
     global _snowflake_instance
-    if _snowflake_instance is None:
-        # 获取数据中心ID和机器ID
-        datacenter_id, machine_id = get_node_ids()
-        _snowflake_instance = Snowflake(datacenter_id, machine_id) # 创建雪花ID实例
+    try:
+        if _snowflake_instance is None:
+            # 获取数据中心ID和机器ID
+            datacenter_id, machine_id = get_node_ids() # 调用配置函数获取节点ID
+            _snowflake_instance = Snowflake(datacenter_id, machine_id) # 创建雪花ID实例
         return _snowflake_instance.get_id() # 返回生成的全局唯一ID
+    except Exception as e:
+        logger.error(f"[get_snowflake_id] 获取雪花ID失败: {e}")
+        return None # 如果发生异常,返回None

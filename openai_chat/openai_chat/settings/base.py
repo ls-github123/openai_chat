@@ -31,7 +31,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles', # 静态文件处理
-    'users' # 用户管理模块
+    'users', # 用户管理模块
+    'interface_test', # 接口测试模块
 ]
 
 # --- 中间件配置 ---
