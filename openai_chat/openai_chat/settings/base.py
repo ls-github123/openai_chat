@@ -159,3 +159,6 @@ LANGUAGE_CODE = 'zh-hans' # 语言设置
 TIME_ZONE = 'Asia/shanghai' # 时区设置
 USE_I18N = True # 启用Django国际化支持
 USE_TZ = True # 使用Django时区支持
+
+# 机器唯一ID
+MACHINE_UNIQUE_ID = get_config("MACHINE_UNIQUE_ID", default=None) # 机器唯一标识,用于分布式ID生成

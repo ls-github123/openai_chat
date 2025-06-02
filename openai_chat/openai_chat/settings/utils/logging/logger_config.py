@@ -59,7 +59,7 @@ def build_logging():
         'file_db_mongo': file_handler('db_mongo', 'INFO'), # MongoDB数据库 日志
         'file_lock': file_handler('lock', 'DEBUG'), # Redis锁 日志
         'file_django': file_handler('django', 'INFO'), # Django框架本体 日志
-        'file_snowflake': file_handler('snowflake', 'WARNING'), # snowflake分布式ID生成 日志
+        'file_snowflake': file_handler('snowflake', 'DEBUG'), # snowflake分布式ID生成 日志
         'file_api': file_handler('api', 'WARNING'), # API模块 日志
         'file_users': file_handler('users', 'DEBUG'), # 用户模块 日志
         'file_chat': file_handler('chat', 'WARNING'), # chat聊天模块 日志'
@@ -177,7 +177,7 @@ def build_logging():
             },
            'project.snowflake.register': { # Snowflake分布式节点ID注册 日志
                'handlers': ['file_snowflake'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'WARNING',
+               'level': 'DEBUG',
                'propagate': False,
             },
            'project.mongo': { # MongoDB数据模块日志
