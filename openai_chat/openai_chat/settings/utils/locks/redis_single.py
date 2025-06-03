@@ -30,7 +30,7 @@ class RedisSingleLock(BaseLock):
         获取锁(使用NX,并设置EX过期时间)
         尝试获取锁, 成功返回 True, 失败返回 False
         """
-        result = self.redis.set(self.key, "1", nx=True, ex=self.expire) # 尝试设置锁
+        result = self.redis.set(self.key, self._token, nx=True, ex=self.expire) # 尝试设置锁
         self._acquired = bool(result) # 设置获取状态
         logger.debug(f"[RedisSingleLock] acquire key={self.key}, success={self._acquired}")
         return self._acquired # 返回获取锁的结果
