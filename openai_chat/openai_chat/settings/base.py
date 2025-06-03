@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles', # 静态文件处理
     'users', # 用户管理模块
     'interface_test', # 接口测试模块
+    'system.apps.SystemConfig', # 系统初始化模块
 ]
 
 # --- 中间件配置 ---

@@ -2,6 +2,7 @@ from openai_chat.settings.utils.logging import get_logger # 导入日志记录�
 from openai_chat.settings.base import MACHINE_UNIQUE_ID # 导入机器唯一标识
 from openai_chat.settings.utils.redis import get_redis_client # 导入Redis客户端获取接口
 from .redis_register import RedisNodeRegister # 导入Redis注册器
+from .snowflake_const import SNOWFLAKE_REDIS_DB # 导入Snowflake Redis DB配置
 
 logger = get_logger("project.snowflake.register")
 
@@ -20,7 +21,7 @@ def get_node_ids() -> tuple[int, int]:
     :return: (datacenter_id, machine_id)
     """
     # 获取Redis客户端实例, 使用db=15隔离环境
-    redis_instance = get_redis_client(db=15)
+    redis_instance = get_redis_client(db=SNOWFLAKE_REDIS_DB)
     machine_hash = get_machine_hash_key() # 获取机器唯一标识作为注册键
     # 创建Redis节点注册器实例, 如果有唯一机器标识则传入, 否则为None
     register = RedisNodeRegister(redis_instance, unique_key=machine_hash or None)

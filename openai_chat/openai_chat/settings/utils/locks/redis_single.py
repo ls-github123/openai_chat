@@ -1,5 +1,6 @@
 # === Redis 单实例锁实现 封装 ===
-import uuid
+import uuid # 导入UUID生成器
+from contextlib import contextmanager # 上下文管理器装饰器
 from openai_chat.settings.utils.logging import get_logger # 导入日志处理器模块封装
 from .interface_lock import BaseLock # 导入锁接口定义
 from redis import Redis # Redis客户端
@@ -19,64 +20,60 @@ class RedisSingleLock(BaseLock):
         :param expire: 锁的过期时间(单位:秒)
         """
         self.redis = redis # Redis客户端实例
-        self.key = key # 锁的唯一标识
-        self.expire = expire # 锁的过期时间
-        self.token = str(uuid.uuid4()) # 生成唯一的锁令牌
+        self.key = key
+        self.expire = expire
+        self._acquired = False # 锁获取状态标识
+        self._token = str(uuid.uuid4()) # 初始化唯一标识符
     
     def acquire(self) -> bool:
         """
-        获取锁
+        获取锁(使用NX,并设置EX过期时间)
         尝试获取锁, 成功返回 True, 失败返回 False
         """
-        try:
-            # 使用 SET NX EX 命令尝试获取锁
-            # NX: 仅在键不存在时设置键值
-            # EX: 设置键的过期时间
-            # 注意: 该实现不支持锁重入, 每次获取锁都会生成新的令牌
-            result = self.redis.set(self.key, self.token, nx=True, ex=self.expire)
-            if result:
-                logger.debug(f"[RedisLock] Acquired lock: {self.key}")
-            return result is True # 返回 True 表示获取成功, False 表示获取失败
-        except Exception as e:
-            logger.error(f"[RedisLock] Exception acquiring {self.key}: {e}")
-            return False
+        result = self.redis.set(self.key, "1", nx=True, ex=self.expire) # 尝试设置锁
+        self._acquired = bool(result) # 设置获取状态
+        logger.debug(f"[RedisSingleLock] acquire key={self.key}, success={self._acquired}")
+        return self._acquired # 返回获取锁的结果
     
     def release(self):
         """
         释放锁
-        仅当前锁令牌匹配时才释放锁
-        如果令牌不匹配, 则不执行任何操作
+        通过 Lua 脚本确保只删除自己设置的锁
         """
-        try:
-            # 使用 Lua 脚本确保原子性操作
-            script = """
-            if redis.call('get', KEYS[1]) == ARGV[1] then
-                return redis.call('del', KEYS[1])
-            else
-                return 0
-            end
-            """
-            # KEYS[1] 是锁的键, ARGV[1] 是锁的令牌
-            self.redis.eval(script, 1, self.key, self.token) # 执行 Lua 脚本确保原子性
-            logger.debug(f"[RedisLock] Released lock: {self.key}")
-        except Exception as e:
-            logger.error(f"[RedisLock] Exception releasing {self.key}: {e}")
-    
-    def lock(self):
-        from contextlib import contextmanager
-        
-        @contextmanager
-        def _lock():
-            # 尝试获取锁
+        if self._acquired:
             try:
-                if self.acquire():
-                    try:
-                        yield True # 成功获取锁，返回True
-                    finally:
-                        self.release() # 确保释放锁
-                else:
-                    yield False # 获取锁失败，返回False
+                # 使用 Lua 脚本原子性删除锁
+                release_script = """
+                if redis.call("get", KEYS[1]) == ARGV[1] then
+                    return redis.call("del", KEYS[1])
+                else
+                    return 0
+                end
+                """
+                self.redis.eval(release_script, 1, self.key, self._token) # 删除锁
+                logger.debug(f"[RedisSingleLock] release key={self.key}")
             except Exception as e:
-                logger.error(f"[RedisLock] Lock context error: {e}")
-                yield False
-        return _lock() # 返回上下文管理器实例
+                logger.warning(f"[RedisSingleLock] release failed: {e}")
+            finally:
+                self._acquired = False # 确保释放后状态置为 False，避免重复释放
+                
+    @contextmanager
+    def lock(self):
+        """
+        上下文管理器接口实现
+        获取当前锁, 成功返回True, 失败返回False
+        """
+        acquired = self.acquire() # 尝试获取锁
+        try:
+            yield acquired # 返回获取锁的结果
+        finally:
+            if acquired: # 如果获取成功则释放锁
+                self.release() # 确保释放锁
+        
+    def __enter__(self):
+        if not self.acquire():
+            raise RuntimeError(f"[RedisSingleLock] Failed to acquire lock: {self.key}")
+        return self # 上下文管理器进入时返回 self，符合基类接口
+        
+    def __exit__(self, exc_type, exc_value, exc_tb):
+        self.release() # 确保退出时释放锁

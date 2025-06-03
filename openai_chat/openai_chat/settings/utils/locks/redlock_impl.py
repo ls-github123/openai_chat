@@ -1,7 +1,9 @@
 # === RedLock 分布式锁实现 封装 ===
 from openai_chat.settings.utils.logging import get_logger # 导入日志处理器模块封装
+from contextlib import contextmanager # 上下文管理器装饰器
 from .interface_lock import BaseLock # 导入锁接口定义
 from redlock import Redlock, Lock  # Redlock分布式锁库
+from typing import Optional # Optional类型提示
 
 logger = get_logger("project.redlock") # 获取Redlock日志记录器
 
@@ -21,57 +23,48 @@ class RedLockWrapper(BaseLock):
         self.redlock = redlock
         self.key = key
         self.ttl = ttl
-        self._lock: Lock | None = None # 当前锁对象
+        self._lock: Optional[Lock] = None # 当前锁对象, 初始为None
         
     def acquire(self) -> bool:
         """
         尝试获取分布式锁
         :return: True 表示获取成功, False 表示获取失败
         """
-        try:
-            lock_result = self.redlock.lock(self.key, self.ttl) # 尝试获取锁
-            if lock_result: # 成功获取锁
-                self._lock = lock_result # 保存锁对象
-                logger.info(f"[RedLock] 获取锁成功: {self.key} with TTL: {self.ttl}ms") # 记录获取锁成功
-                return True
-            else:
-                self._lock = None # 获取锁失败
-                logger.warning(f"[RedLock] 获取锁失败: {self.key} after {self.ttl}ms") # 记录获取锁失败
-                return False
-        except Exception as e: # 捕获异常
-            logger.error(f"[RedLock] 获取锁异常: {self.key}: {e}") # 记录异常信息
-            return False
+        lock_result = self.redlock.lock(self.key, self.ttl) # 尝试获取锁
+        self._lock = lock_result or None # 将锁对象赋值给 _lock
+        acquired = self._lock is not None # 检查锁是否成功获取
+        logger.debug(f"[RedLockWrapper] acquire key={self.key}, success={acquired}")
+        return acquired # 返回获取锁的结果
     
     def release(self):
         """
         释放当前锁
         """
-        try:
-            if self._lock:
+        if self._lock:
+            try:
                 self.redlock.unlock(self._lock) # 释放锁
-                logger.info(f"[RedLock] 释放锁成功: {self.key}") # 记录释放锁成功
-        except Exception as e: 
-            logger.error(f"[RedLock] 释放锁异常: {self.key}: {e}") # 记录释放锁异常信息
-        finally:
-            self._lock = None # 确保锁对象被清空
-
+                logger.debug(f"[RedLockWrapper] release key={self.key}")
+            except Exception as e:
+                logger.warning(f"[RedLockWrapper] release failed: {e}")
+            finally:
+                self._lock = None # 确保释放后锁对象置为 None，避免重复释放
+    
+    @contextmanager
     def lock(self): # 上下文管理器接口实现
         """
         获取当前锁
         """
-        from contextlib import contextmanager # 上下文管理器
-
-        @contextmanager
-        def _lock_context(): # 上下文管理器封装
-            try:
-                if self.acquire():
-                    try:
-                        yield True # 返回 True 表示获取锁成功
-                    finally: # 确保释放锁
-                        self.release()
-                else:
-                    yield False # 返回 False 表示获取锁失败
-            except Exception as e:
-                logger.error(f"[RedLock] Lock context error: {e}") # 记录上下文管理器异常信息
-                yield False
-        return _lock_context() # 返回上下文管理器实例
+        acquired = self.acquire() # 尝试获取锁
+        try:
+            yield acquired # 返回获取锁的结果
+        finally:
+            if acquired:
+                self.release() # 确保释放锁
+    
+    def __enter__(self):
+        if not self.acquire():
+            raise RuntimeError(f"[RedLockWrapper] Failed to acquire lock: {self.key}")
+        return self # 上下文管理器进入时返回 self，表示锁已获取
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()

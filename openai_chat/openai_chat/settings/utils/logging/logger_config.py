@@ -180,6 +180,11 @@ def build_logging():
                'level': 'DEBUG',
                'propagate': False,
             },
+           'project.snowflake.guard': { # Snowflake分布式节点续约 日志
+               'handlers': ['file_snowflake'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'level': 'DEBUG',
+               'propagate': False,
+            },
            'project.mongo': { # MongoDB数据模块日志
                'handlers': ['file_db_mongo'],
                'level': 'INFO',

@@ -4,7 +4,7 @@ Redis客户端与 Redlock分布式锁配置模块
 - 专用于锁模块(Redis db=0)
 注:锁模块专属Redis实例配置,独立于Django缓存系统(CACHES)
 """
-from utils.redis import get_redis_client # 导入统一封装的Redis客户端获取函数
+from openai_chat.settings.utils.redis import get_redis_client # 导入统一封装的Redis客户端获取函数
 from redlock import Redlock # Redlock分布式锁库
 from openai_chat.settings.base import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
 from openai_chat.settings.utils.logging import get_logger # 导入日志处理器模块封装
