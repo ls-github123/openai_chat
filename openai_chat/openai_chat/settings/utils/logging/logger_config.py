@@ -63,6 +63,7 @@ def build_logging():
         'file_api': file_handler('api', 'WARNING'), # API模块 日志
         'file_users': file_handler('users', 'DEBUG'), # 用户模块 日志
         'file_chat': file_handler('chat', 'WARNING'), # chat聊天模块 日志'
+        'file_email': file_handler('email', 'INFO'), # Resend 邮件发送服务API模块 日志
 	}
     
     # 控制台输出处理器(仅开发环境启用)
@@ -208,6 +209,16 @@ def build_logging():
            'project.users': { # 用户模块日志(注册、登录等操作)
                'handlers': ['file_users'],
                'level': 'DEBUG',
+               'propagate': False,
+            },
+           'email_resend_client': { # Resend 邮件服务API封装 日志
+               'handlers': ['file_email'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'task_email': { # Celery 任务队列异步发送邮件 日志
+               'handlers': ['file_email'],
+               'level': 'INFO',
                'propagate': False,
             },
            '': { # fallback 根 logger(通用日志)

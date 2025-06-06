@@ -98,10 +98,17 @@ REDIS_HOST = get_config('REDIS_HOST', default='127.0.0.1') # Redis主机地址
 REDIS_PORT = get_config('REDIS_PORT', default='6379') # Redis主机端口号
 REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD # Redis连接密码
 
+# Redis URL 基础前缀
+REDIS_BASE_URL = (
+    f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
+    if REDIS_PASSWORD else
+    f"redis://{REDIS_HOST}:{REDIS_PORT}"
+)
+
 CACHES = { # Django缓存配置
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache', # 使用django-redis作为缓存后端
-        'LOCATION': f'redis://{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1', # Redis连接地址
+        'LOCATION': f"{REDIS_BASE_URL}/4", # Redis连接地址(Django CACHE使用db-4库)
         'OPTIONS': { # 连接池配置
             'CLIENT_CLASS': 'django_redis.client.DefaultClient', # 使用默认客户端
             'decode_responses': True, # 自动字符串解码
@@ -112,6 +119,25 @@ CACHES = { # Django缓存配置
         }
     }
 }
+
+
+# === Celery 任务队列模块配置 ===
+# - Celey 核心配置
+CELERY_BROKER_URL = f"{REDIS_BASE_URL}/1" # Celery 中间人(任务传递系统)/使用db-1库
+CELERY_RESULT_BACKEND = f"{REDIS_BASE_URL}/2" # Celery 任务结果存储 使用db-2库
+
+# - 安全和兼容性建议配置
+CELERY_ACCEPT_CONTENT = ['json'] # 仅允许接收 JSON 格式
+CELERY_TASK_SERIALIZER = 'json' # 任务序列化方式
+CELERY_RESULT_SERIALIZER = 'json' # 结果序列化方式
+
+# - 时区设置(与 Django 保持一致)
+CELERY_TIMEZONE = 'Asia/Shanghai'
+CELERY_ENABLE_UTC = False
+
+# - 任务结果过期时间(单位:秒), 防止 Redis 堆满内存
+CELERY_TASK_RESULT_EXPIRES = 3600 # 1小时
+
 
 # === MongoDB配置 ===
 MONGO_DB_NAME = get_config('MONGO_DB_NAME', default='openai_chat_db')
@@ -149,6 +175,16 @@ AUTH_PASSWORD_VALIDATORS = [
 AUTHENTICATION_BACKENDS = [
     
 ]
+
+# === 邮件发送服务(Resend) ===
+RESEND_EMAIL = {
+    "API_KEY": SecretConfig.RESEND_API_KEY, # RESEND服务API key
+    "API_URL": "https://api.resend.com/emails", # Resend服务 Email API地址
+    "FROM_NAME": "OpenAI_Chat",
+    "FROM_EMAIL": "support@openai-chat.xyz", # 在 Resend 验证的发信域名
+    "TIMEOUT": 10, # 请求超时时间(秒)
+    "RETRY": 2, # 失败重试次数(扩展)
+}
 
 # === 静态与媒体资源路径 ===
 STATIC_URL = '/static/' # 静态文件URL前缀

@@ -55,6 +55,7 @@ class SecretConfig:
     REDIS_PASSWORD: str = get_secret_by_env("REDIS_PASSWORD_NAME", "openai-redis-pd", vault)
     MONGO_PASSWORD: str = get_secret_by_env("MONGO_PASSWORD_NAME", "mongodb-chatuser-pwd", vault)
     MYSQL_PASSWORD: str = get_secret_by_env("DB_PASSWORD_NAME", "openai-mysql-root", vault)
+    RESEND_API_KEY: str = get_secret_by_env("RESEND_EMAIL_API_KEY_NAME", "RESEND-API-KEY", vault) # Resend邮件发送服务API Key
 
 class VaultClient:
     """暴露Vault实例接口(特殊情况下直接使用)"""
