@@ -3,7 +3,7 @@ from typing import Optional
 from celery import shared_task
 from openai_chat.settings.utils.email import send_email # 邮件异步发送API接口函数
 from openai_chat.settings.utils.logging import get_logger
-from .task_decorators import resilient_task
+from .task_decorators import resilient_task # 引入Celery任务装饰器获取函数
 
 logger = get_logger("task_email")
 
@@ -21,11 +21,11 @@ def send_email_async_task(self, to_email: str, subject: str, html_content: str, 
     
     日志:
     - 成功记录 info
-    - 失败或异常记录 warning/error
+    - 失败或异常记录 error
     """
     result = asyncio.run(send_email(to_email, subject, html_content, from_email))
     if result:
         logger.info(f"[任务] ✅邮件已发送给 {to_email}")
     else:
-        logger.warning(f"[任务] ❌ 邮件发送失败 -> {to_email}")
+        logger.error(f"[任务] ❌ 邮件发送失败 -> {to_email}")
     return result

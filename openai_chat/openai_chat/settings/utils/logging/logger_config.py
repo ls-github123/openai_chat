@@ -196,12 +196,12 @@ def build_logging():
                'level': 'INFO',
                'propagate': False,
             },
-           'project.mysql': { # Mysql数据库业务日志(连接失败、事务异常等)
-               'handlers': ['file_db_mysql'],
+           'mysql_client': { # Mysql数据库业务日志(连接失败、事务异常等)
+               'handlers': ['file_db_mysql'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'INFO',
                'propagate': False,
             },
-           'django.db.backends': { # Mysql ORM 日志
+           'mysql_orm': { # Mysql ORM 日志
                 'handlers': ['file_db_mysql'],
                 'level': 'INFO',
                 'propagate': False,

@@ -10,6 +10,7 @@ import os
 from openai_chat.settings.utils import path_utils # 导入路径工具模块
 from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
 from pymongo import MongoClient # MongoDB客户端
+from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mysql数据库连接池
 from . import LOGGING # 导入日志配置
 
 # 基础目录
@@ -75,22 +76,7 @@ CORS_ALLOW_CREDENTIALS = True # 允许携带cookie
 
 # === Mysql数据库配置 ===
 DATABASES = {
-    'default': {
-        "ENGINE": 'django.db.backends.mysql', # 数据库引擎
-        "NAME": get_config('DB_NAME', default='openai_chat_db'), # 数据库名称
-        "USER": get_config('DB_USER', default='root'), # 数据库用户名
-        "PASSWORD": SecretConfig.MYSQL_PASSWORD, # 数据库密码
-        "HOST": get_config('DB_HOST', default='localhost'), # 数据库主机地址
-        "PORT": get_config('DB_PORT', default='3306'), # 数据库连接端口号
-        "OPTIONS": {
-            'init_command':"SET sql_mode='STRICT_TRANS_TABLES'", # 初始化命令,设置SQL模式
-            'charset': 'utf8mb4', # 字符集设置
-            'connect_timeout': 10, # 连接超时时间
-            'read_timeout': 20, # 读取超时时间
-            'write_timeout': 20, # 写入超时时间
-            'ssl': {'ssl-mode': 'DISABLED'},  # 禁用 SSL 验证
-        },
-    }
+    'default': get_mysql_config('default'), # 默认单台mysql实例(预留分布式部署模式)
 }
 
 # === Redis缓存配置 ===
@@ -132,7 +118,7 @@ CELERY_TASK_SERIALIZER = 'json' # 任务序列化方式
 CELERY_RESULT_SERIALIZER = 'json' # 结果序列化方式
 
 # - 时区设置(与 Django 保持一致)
-CELERY_TIMEZONE = 'Asia/Shanghai'
+CELERY_TIMEZONE = 'Asia/shanghai'
 CELERY_ENABLE_UTC = False
 
 # - 任务结果过期时间(单位:秒), 防止 Redis 堆满内存
