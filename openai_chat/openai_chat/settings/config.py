@@ -56,7 +56,11 @@ class SecretConfig:
     MONGO_PASSWORD: str = get_secret_by_env("MONGO_PASSWORD_NAME", "mongodb-chatuser-pwd", vault)
     DB_PASSWORD: str = get_secret_by_env("DB_PASSWORD_NAME", "openai-mysql-root", vault) # Mysql默认主库密码
     RESEND_API_KEY: str = get_secret_by_env("RESEND_EMAIL_API_KEY_NAME", "RESEND-API-KEY", vault) # Resend邮件发送服务API Key
-
+    # Cloudflare Turnstile人机验证服务组件(admin管理模块)后端密钥名
+    TURNSTILE_ADMIN_SECRET_KEY: str = get_secret_by_env("TURNSTILE_ADMIN_SECRET_KEY_NAME", "trunstile-admin-secret-key", vault)
+    # Cloudflare Turnstile人机验证服务组件(用户登录/注册模块)后端密钥名
+    TURNSTILE_USERS_SECRET_KEY: str = get_secret_by_env("TURNSTILE_USERS_SECRET_KEY_NAME", "turnstile-users-secret-key", vault)
+    
 class VaultClient:
     """暴露Vault实例接口(特殊情况下直接使用)"""
     instance = vault

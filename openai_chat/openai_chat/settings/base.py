@@ -144,6 +144,10 @@ mongo_client = MongoClient(
 )
 mongo_db = mongo_client.get_database(MONGO_DB_NAME) # type: ignore # 获取MongoDB数据库实例
 
+# === Cloudflare Turnstile 人机验证模块配置 ===
+TURNSTILE_ADMIN_SECRET_KEY = SecretConfig.TURNSTILE_ADMIN_SECRET_KEY # admin管理模块后端密钥
+TURNSTILE_USERS_SECRET_KEY = SecretConfig.TURNSTILE_USERS_SECRET_KEY # 用户登录/注册模块后端密钥
+
 # === 密码强度验证器配置 ===
 AUTH_PASSWORD_VALIDATORS = [
     {
