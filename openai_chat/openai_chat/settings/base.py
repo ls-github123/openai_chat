@@ -37,6 +37,27 @@ INSTALLED_APPS = [
     'system.apps.SystemConfig', # 系统初始化模块
 ]
 
+# === 配置Django AUTH用户认证系统所需用户模型 ===
+# 格式: 子应用名.模型名 -- 必须在数据第一次迁移时配置完成
+AUTH_USER_MODEL = "users.User"
+
+# === 密码加密策略配置 ===
+PASSWORD_HASHERS = [
+    # 优先使用 bcrypt + sha256 加密密码
+    'django.contrib.auth.hashers.BCryptSHA256PasswordHasher',
+    # 兼容其他可能存在的旧加密方式（可选但建议保留）
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.ScryptPasswordHasher',
+]
+
+# === 用户认证后端配置 ===
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',  # 默认数据库用户模型认证方式
+]
+
+
 # --- 中间件配置 ---
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware', # 安全中间件
@@ -161,11 +182,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# === 自定义认证后端配置 ===
-AUTHENTICATION_BACKENDS = [
-    
-]
-
 # === 邮件发送服务(Resend) ===
 RESEND_EMAIL = {
     "API_KEY": SecretConfig.RESEND_API_KEY, # RESEND服务API key
@@ -184,7 +200,7 @@ MEDIA_ROOT = BASE_DIR / 'media' # 媒体文件存放目录
 
 # === 本地化与国际化配置 ===
 LANGUAGE_CODE = 'zh-hans' # 语言设置
-TIME_ZONE = 'Asia/shanghai' # 时区设置
+TIME_ZONE = 'Asia/Shanghai' # 时区设置
 USE_I18N = True # 启用Django国际化支持
 USE_TZ = True # 使用Django时区支持
 
