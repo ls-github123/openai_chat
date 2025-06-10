@@ -5,12 +5,15 @@ from openai_chat.settings.utils.redis import get_redis_client
 from django.http import JsonResponse
 from openai_chat.settings.utils.snowflake import get_snowflake_id
 from tasks.email_tasks import send_email_async_task  # Ensure this is a Celery task, not a list
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 # If send_email_async_task is a list, fix the import in tasks/email_tasks.py to export the Celery task function.
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
 
-
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def test_snowflake(request):
     """
     生成并返回一个全局唯一雪花ID(测试接口)
@@ -27,6 +30,7 @@ def test_snowflake(request):
 
 
 class TestRedisLockView(APIView):
+    permission_classes = [AllowAny]  # 允许匿名访问
     def get(self, request):
         key = "test:redis:lock"
         redis_ttl = 10000

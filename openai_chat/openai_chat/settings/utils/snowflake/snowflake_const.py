@@ -5,9 +5,10 @@ Snowflake 全局常量配置模块
 - 雪花ID位宽配置
 - 自定义 epoch 时间戳
 """
+from openai_chat.settings.base import REDIS_DB_SNOWFLAKE
 
 # Redis DB 配置
-SNOWFLAKE_REDIS_DB = 15 # Redis 数据库编号, 用于存储 snowflake 节点注册信息
+SNOWFLAKE_REDIS_DB = REDIS_DB_SNOWFLAKE # Redis 数据库编号(db=15), 用于存储 snowflake 节点注册信息
 
 # 系统初始化全局锁配置
 SYSTEM_INIT_LOCK_KEY = "system:init:lock" # Redis锁键

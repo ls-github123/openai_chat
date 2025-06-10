@@ -12,6 +12,7 @@ from .config import get_config, SecretConfig, VaultClient # 从config.py导入�
 from pymongo import MongoClient # MongoDB客户端
 from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mysql数据库连接池
 from . import LOGGING # 导入日志配置
+from datetime import timedelta # 导入时间差对象,用于时间加减计算
 
 # 基础目录
 BASE_DIR = path_utils.BASE_DIR # 项目根路径
@@ -25,20 +26,66 @@ SECRET_KEY = SecretConfig.DJANGO_SECRET_KEY # Django密钥
 
 # --- 应用注册 ---
 INSTALLED_APPS = [
-    'corsheaders', # 跨域支持组件
+    # === Django 官方内置应用 ===
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles', # 静态文件处理
-    'users', # 用户管理模块
+    
+    # === 第三方库 ===
+    'rest_framework', # DRF核心
+    'rest_framework_simplejwt.token_blacklist', # JWT黑名单支持
+    'corsheaders', # 跨域支持组件
+    
+    # === 本地业务应用 ===
     'interface_test', # 接口测试模块
+    'users', # 用户管理模块
     'system.apps.SystemConfig', # 系统初始化模块
 ]
 
+# === REST Framework配置(适用生产环境) ===
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES':( # 默认认证方式配置(用于识别用户身份)
+        # 支持前端用户接口使用 JWT 验证
+        # - 用户提交有效的JWT令牌(Authorization: Bearer <token>)访问受保护接口
+        # - Token 中携带用户身份,后端自动验证有效性、过期时间、签名等
+        # - 若验证成功，request.user 即为对应的用户实例
+        # - 若失败，request.user 将为 AnonymousUser，API 返回 401 Unauthorized
+        'rest_framework_simplejwt.authentication.JWTAuthentication', 
+        
+        # 支持后台管理页面使用使用 Cookie 登录
+        'rest_framework.authentication.SessionAuthentication', 
+    ),
+    'DEFAULT_PERMISSION_CLASSES':(
+        # 默认权限控制类:
+        # - 默认所有 API 仅允许“已认证用户”访问
+        # - 未登录用户访问任何受保护接口时将返回 403 Forbidden
+        # 注:可在视图中覆盖该默认行为
+        # 可选替换方案包括:
+        # - AllowAny：允许任何人访问（开发/调试阶段可用）
+        # - IsAdminUser：仅允许 is_staff=True 的后台管理员访问
+        # - DjangoModelPermissions：基于模型权限（view/add/change/delete）控制访问
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    'DEFAULT_RENDERER_CLASSES': (
+        'rest_framework.renderers.JSONRenderer', # 只返回 JSON，禁用 Browsable API
+    ),
+    'DEFAULT_PARSER_CLASSES': (
+        'rest_framework.parsers.JSONParser', # 限制只接受 JSON 请求体
+    ),
+}
+
+# === JWT认证配置 ===
+SIMPLE_JWT = {
+    "ALGORITHM": "RS256", # 非对称算法
+}
+
+
+
 # === 配置Django AUTH用户认证系统所需用户模型 ===
-# 格式: 子应用名.模型名 -- 必须在数据第一次迁移时配置完成
+# 格式: 子应用名.模型名 -- 数据第一次迁移时配置完成
 AUTH_USER_MODEL = "users.User"
 
 # === 密码加密策略配置 ===
@@ -105,6 +152,13 @@ REDIS_HOST = get_config('REDIS_HOST', default='127.0.0.1') # Redis主机地址
 REDIS_PORT = get_config('REDIS_PORT', default='6379') # Redis主机端口号
 REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD # Redis连接密码
 
+# === Redis DB 编号映射 ===
+# REDIS_DB_LOCK = 0 # RedLock锁(Redis锁)占用库/已默认配置
+REDIS_DB_CELERY_BROKER = 1 # Celery任务传递系统占用库
+REDIS_DB_CELERY_RESULT = 2 # Celery任务执行结果存储占用库
+REDIS_DB_JWT_CACHE = 3 # JWT模块签名结果缓存占用库
+REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
+
 # Redis URL 基础前缀
 REDIS_BASE_URL = (
     f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
@@ -130,8 +184,8 @@ CACHES = { # Django缓存配置
 
 # === Celery 任务队列模块配置 ===
 # - Celey 核心配置
-CELERY_BROKER_URL = f"{REDIS_BASE_URL}/1" # Celery 中间人(任务传递系统)/使用db-1库
-CELERY_RESULT_BACKEND = f"{REDIS_BASE_URL}/2" # Celery 任务结果存储 使用db-2库
+CELERY_BROKER_URL = f"{REDIS_BASE_URL}/{REDIS_DB_CELERY_BROKER}" # Celery 中间人(任务传递系统)/使用db-1库
+CELERY_RESULT_BACKEND = f"{REDIS_BASE_URL}/{REDIS_DB_CELERY_RESULT}" # Celery 任务结果存储 使用db-2库
 
 # - 安全和兼容性建议配置
 CELERY_ACCEPT_CONTENT = ['json'] # 仅允许接收 JSON 格式

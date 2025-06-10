@@ -131,6 +131,11 @@ def build_logging():
                'level': 'DEBUG',
                'propagate': False,
 		   },
+           'jwt': { # JWT 模块日志(签名/验证等)
+               'handlers': ['file_users'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+               'level': 'DEBUG',
+               'propagate': False,
+           },
            'openai_chat.settings.azure_key_vault_client': { # Azure key vault 模块日志
                'handlers': ['file_azure_key_vault'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'WARNING',
