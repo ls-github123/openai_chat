@@ -178,3 +178,21 @@ class AzureRS256Verifier:
         except Exception as e:
             logger.warning(f"[JWT Verify Failed] 验证失败: {e}")
             raise RuntimeError("JWT Token 非法或已过期")
+    
+    # === 类方法: 单例懒加载 ===
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls) -> "AzureRS256Verifier":
+        """
+        获取全局单例实例
+        - 避免频繁初始化 Azure 和 Redis 客户端
+        - 可直接用于需要JWT验证的模块
+        """
+        if cls._instance is None:
+            from django.conf import settings
+            cls._instance = cls(
+                vault_url = settings.AZURE_VAULT_URL,
+                key_name = settings.JWT_KEY,
+            )
+        return cls._instance

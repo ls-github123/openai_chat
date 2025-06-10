@@ -126,3 +126,19 @@ class AzureRS256Signer:
             except Exception as e:
                 logger.error(f"[JWT Sign Error]签名失败, key={cache_key}, 错误: {e}")
                 raise RuntimeError(f"[JWT Sign Error] 签名过程异常: {e}")
+            
+    # === 类方法: 单例懒加载 ===
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls) -> "AzureRS256Signer":
+        """
+        获取全局单例实例
+        """
+        if cls._instance is None:
+            from django.conf import settings
+            cls._instance = cls(
+                vault_url = settings.AZURE_VAULT_URL,
+                key_name = settings.JWT_KEY,
+            )
+        return cls._instance

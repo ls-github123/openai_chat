@@ -17,6 +17,11 @@ from datetime import timedelta # 导入时间差对象,用于时间加减计算
 # 基础目录
 BASE_DIR = path_utils.BASE_DIR # 项目根路径
 
+# === Azure Key Vault 配置 ===
+AZURE_VAULT_URL = get_config("AZURE_VAULT_URL", default="https://openai-chat-key.vault.azure.net/")
+JWT_KEY = get_config("JWT_RSA_SECRET_KEY_NAME", default="JWT-RSA_SECRET-KEY")
+
+
 # 安全配置
 SECRET_KEY = SecretConfig.DJANGO_SECRET_KEY # Django密钥
 # DEBUG = config("DEBUG", cast=bool, default=True)
@@ -48,12 +53,8 @@ INSTALLED_APPS = [
 # === REST Framework配置(适用生产环境) ===
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES':( # 默认认证方式配置(用于识别用户身份)
-        # 支持前端用户接口使用 JWT 验证
-        # - 用户提交有效的JWT令牌(Authorization: Bearer <token>)访问受保护接口
-        # - Token 中携带用户身份,后端自动验证有效性、过期时间、签名等
-        # - 若验证成功，request.user 即为对应的用户实例
-        # - 若失败，request.user 将为 AnonymousUser，API 返回 401 Unauthorized
-        'rest_framework_simplejwt.authentication.JWTAuthentication', 
+        # 使用自定义的JWT认证类
+        'openai_chat.settings.utils.jwt.jwt_auth.JWTAuthentication',
         
         # 支持后台管理页面使用使用 Cookie 登录
         'rest_framework.authentication.SessionAuthentication', 
@@ -79,7 +80,16 @@ REST_FRAMEWORK = {
 
 # === JWT认证配置 ===
 SIMPLE_JWT = {
-    "ALGORITHM": "RS256", # 非对称算法
+    "ALGORITHM": "RS256", # 非对称签名算法
+    "SIGNING_KEY": None, # 不使用本地私钥, 改为外部公钥验证
+    "VERIFYING_KEY": None, # 公钥验证由自定义验证器完成
+    "AUTH_HEADER_TYPES": ("Bearer",), # Token前缀
+    "USER_ID_FIELD": "id", # JWT识别用户字段
+    "USER_ID_CLAIM": "sub", # JWT payload 中用户身份识别字段
+    "TOKEN_TYPE_CLAIN": "typ", # 标记access类型
+    "JTI_CLAIM": "jti", # Token唯一标识, 可用于撤销
+    "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
+    "TOKEN_USER_CLASS": "users.models.User", # 自定义用户模型路径
 }
 
 
