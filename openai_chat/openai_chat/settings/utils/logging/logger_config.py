@@ -211,7 +211,12 @@ def build_logging():
                 'level': 'INFO',
                 'propagate': False,
             },
-           'project.users': { # 用户模块日志(注册、登录等操作)
+           'users': { # 用户模块日志(注册、登录等操作)
+               'handlers': ['file_users'],
+               'level': 'DEBUG',
+               'propagate': False,
+            },
+           'users.totp': { # 用户模块-TOTP验证 日志
                'handlers': ['file_users'],
                'level': 'DEBUG',
                'propagate': False,
