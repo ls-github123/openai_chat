@@ -78,20 +78,28 @@ REST_FRAMEWORK = {
     ),
 }
 
-# === JWT认证配置 ===
+# === JWT 模块配置 ===
+# JWT认证配置
 SIMPLE_JWT = {
-    "ALGORITHM": "RS256", # 非对称签名算法
+    "ALGORITHM": "RS256", # 非对称加密算法
     "SIGNING_KEY": None, # 不使用本地私钥, 改为外部公钥验证
-    "VERIFYING_KEY": None, # 公钥验证由自定义验证器完成
+    "VERIFYING_KEY": None, # 公钥验证由自定义验证器(verifier)完成
     "AUTH_HEADER_TYPES": ("Bearer",), # Token前缀
-    "USER_ID_FIELD": "id", # JWT识别用户字段
-    "USER_ID_CLAIM": "sub", # JWT payload 中用户身份识别字段
-    "TOKEN_TYPE_CLAIN": "typ", # 标记access类型
-    "JTI_CLAIM": "jti", # Token唯一标识, 可用于撤销
-    "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
+    "USER_ID_FIELD": "id", # Django用户模型主键字段(识别用户身份)
+    "USER_ID_CLAIM": "sub", # JWT payload 中用户身份识别字段(sub)
+    "TOKEN_TYPE_CLAIM": "typ", # 标记 token 类型(如 access/refresh)
+    "JTI_CLAIM": "jti", # JWT ID, 唯一标识, 用于 token 黑名单或撤销机制
+    "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",), # 指定解析的 Token 类型
     "TOKEN_USER_CLASS": "users.models.User", # 自定义用户模型路径
 }
 
+# JWT 扩展配置(jwt_payload.py使用)
+JWT_ISSUER = "openai-chat.xyz" # JWT 签发方标识
+JWT_AUDIENCE = "openai_chat_user" # JWT接收方标识
+JWT_SCOPE_DEFAULT = "user" # 默认权限范围
+# JWT 令牌生命周期配置
+JWT_ACCESS_TOKEN_LIFETIME = 60 * 15 # Access Token默认有效期(15分钟)
+JWT_REFRESH_TOKEN_LIFETIME = 60 * 60 * 24 * 7 # Refresh Token默认有效期(7天)
 
 
 # === 配置Django AUTH用户认证系统所需用户模型 ===
