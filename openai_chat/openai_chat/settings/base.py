@@ -176,6 +176,7 @@ REDIS_DB_CELERY_BROKER = 1 # Celery任务传递系统占用库
 REDIS_DB_CELERY_RESULT = 2 # Celery任务执行结果存储占用库
 REDIS_DB_JWT_CACHE = 3 # JWT模块签名结果缓存占用库
 REDIS_DB_TOTP_QR_CACHE = 4 # TOTP二维码缓存占用库
+REDIS_DB_USERS_REGISTER_CACHE = 5 # 用户模块预注册缓存信息占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 
 # Redis URL 基础前缀
@@ -245,13 +246,24 @@ TURNSTILE_USERS_SECRET_KEY = SecretConfig.TURNSTILE_USERS_SECRET_KEY # 用户登
 # === 密码强度验证器配置 ===
 AUTH_PASSWORD_VALIDATORS = [
     {
-        # 密码最小长度限制
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-        'OPTIONS': {'min_length': 8},
+        # 1.防止密码与用户信息过于相似(如用户名/邮箱)
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        'OPTIONS': {
+            'user_attributes': ('email', 'phone_number') # 自定义字段
+        }  
     },
     {
-        # 常见弱密码库
+        # 2.最小长度限制
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 8}, # 密码长度不得少于8位
+    },
+    {
+        # 3.屏蔽常见弱密码
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        # 4.禁止纯数字密码
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',  
     },
 ]
 
