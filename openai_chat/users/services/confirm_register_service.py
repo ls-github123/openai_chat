@@ -16,6 +16,7 @@ class ConfirmRegisterService:
     """
     注册确认服务类:
     - 验证码一致性校验
+    - 验证码错误计数(10分钟内错误不得超过5次)
     - 用户注册信息落库
     - 清理redis注册缓存
     """
@@ -28,28 +29,57 @@ class ConfirmRegisterService:
     async def validate_code(self) -> Tuple[bool, str, Dict[str, Any]]:
         """
         异步校验验证码是否匹配 Redis 缓存
+        - 验证码错误计数器
         - :return: 是否通过(True或False), 提示信息, Redis 中缓存的用户注册信息
         """
+        # === 1.校验验证码是否已达失败限制 ===
+        error_key = f"register:fail:{self.email}"
+        MAX_ATTEMPTS = 5 # 验证码错误次数限制
+        EXPIRE_SECONDS = 600 # 失败计数键过期时间(秒)
+        
+        try:
+            # 获取当前验证码错误次数(如果键不存在则默认为0)
+            failed_times = int(await self.redis.get(error_key) or 0)
+            if failed_times >= MAX_ATTEMPTS:
+                logger.warning(f"[用户注册] 用户{self.email}验证码输入错误次数过多, 需等待后重试!")
+                return False, "验证码错误次数过多, 请稍后再试", {}
+        except Exception as e:
+            logger.error(f"[用户注册] 用户{self.email} 获取验证码失败次数异常: {e}")
+        
+        # === 2.获取用户在redis中的预注册缓存信息 ===
         try:
             raw = await self.redis.get(self.redis_key)
             if not raw:
                 return False, "注册信息不存在或验证码已过期", {}
             info = json.loads(raw.decode("utf-8")) # 解析JSON
-        
         except UnicodeDecodeError as e:
             logger.error(f"[用户注册] Redis 缓存解码失败: {e}")
             return False, "缓存格式错误", {}
-        
         except json.JSONDecodeError as e:
             logger.error(f"[用户注册] Redis JSON解析失败: {e}")
             return False, "缓存数据损坏", {}
-        
         except Exception as e:
             logger.error(f"[用户注册] Redis 获取注册缓存失败: {e}")
             return False, "服务器异常, 请稍后重试", {}
         
+        # === 3.验证码比对校验 ===
         if info.get("verify_code") != self.verify_code:
-            return False, "验证码错误", {}
+            try:
+                # 在redis中对错误键执行自增(+1),如果该键不存在则自动创建并初始化为1
+                await self.redis.incr(error_key)
+                # 设置验证码错误计数的过期时间为 10 分钟
+                # 每次出错都刷新 TTL，相当于"连续出错 10 分钟内有效"
+                # 10分钟内没有继续输错: Redis自动删除该键(即错误计数归零)
+                await self.redis.expire(error_key, EXPIRE_SECONDS) # 设置失败记录过期时间(10分钟)
+            except Exception as e:
+                logger.error(f"[用户注册] 增加失败次数异常: {e}")
+            return False, "验证码错误, 请重试!", {}
+        
+        # === 4.验证通过清除当前用户错误记录缓存 ===
+        try:
+            await self.redis.delete(error_key)
+        except Exception as e:
+            logger.error(f"[用户注册] 清除{self.email}验证码错误计数异常: {e}")
         
         return True, "验证通过", info
     
