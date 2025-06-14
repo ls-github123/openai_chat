@@ -16,21 +16,21 @@ class ConfirmRegisterService:
     """
     注册确认服务类:
     - 验证码一致性校验
-    - 验证码错误计数(10分钟内错误不得超过5次)
+    - 验证码错误计数(现在5次)
     - 用户注册信息落库
-    - 清理redis注册缓存
+    - 注册成功后清除redis缓存
     """
     def __init__(self, email: str, verify_code: str):
-        self.email = email.strip().lower() # 去除空格 + 标准化邮箱
-        self.verify_code = verify_code.strip()
+        self.email = email.strip().lower() # 祛除空格 + 标准化邮箱
+        self.verify_code = verify_code.strip() # 对传入验证码祛除空格
         self.redis_key = f"register:{self.email}"
         self.redis = get_redis_client(db=REDIS_DB_USERS_REGISTER_CACHE)
         
     async def validate_code(self) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        异步校验验证码是否匹配 Redis 缓存
+        异步校验验证码是否正确 + 限制错误次数
         - 验证码错误计数器
-        - :return: 是否通过(True或False), 提示信息, Redis 中缓存的用户注册信息
+        - :return: 验证是否通过(True或False), 提示信息, Redis 中缓存的用户注册信息
         """
         # === 1.校验验证码是否已达失败限制 ===
         error_key = f"register:fail:{self.email}"
@@ -86,6 +86,7 @@ class ConfirmRegisterService:
     async def create_user(self, register_info: Dict[str, Any]) -> Tuple[bool, str]:
         """
         异步创建用户(通过 sync_to_async 包装同步ORM)
+        - 加锁 + 校验 + ORM创建
         - with lock 加锁防止并发写入
         - :param register_info: Redis 缓存中的注册信息(含加密密码、手机号)
         """
