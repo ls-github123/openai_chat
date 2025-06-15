@@ -1,6 +1,7 @@
 # === TOTP 序列化器模块 ===
 # 封装启用和验证动态口令逻辑
 from rest_framework import serializers # DRF 序列化器基类
+from django.utils.translation import gettext_lazy as _ # 国际化支持
 from django.contrib.auth import get_user_model # 获取当前用户模型
 from django.utils.translation import gettext_lazy as _ # 国际化支持(错误信息可翻译)
 from users.totp.totp_utils import verify_totp_token # 导入totp验证函数
@@ -45,3 +46,30 @@ class TOTPVerifySerializer(serializers.Serializer):
             raise serializers.ValidationError(_("验证码错误或已过期"))
         
         return attrs
+
+
+# === 账户登录二次验证 TOTP 序列化器 ===
+class TOTPLoginVerifySerializer(serializers.Serializer):
+    """
+    用户绑定TOTP, 登录账户二次验证TOTP序列化器:
+    - 校验当前用户是否已绑定 TOTP
+    - 验证用户提交的6位验证码格式
+    - 使用数据库中对应 totp_secret 进行动态口令验证
+    """
+    token = serializers.CharField(
+        max_length=6,
+        required=True,
+        help_text=_("6位动态验证码"),
+        label=_("验证码")
+    )
+    
+    def validate_token(self, value: str) -> str:
+        """
+        字段级别验证:
+        - 格式必须为6位纯数字
+        """
+        if not value.isdigit():
+            raise serializers.ValidationError(_("验证码必须为数字"))
+        if len(value) != 6:
+            raise serializers.ValidationError(_("验证码必须为6位"))
+        return value

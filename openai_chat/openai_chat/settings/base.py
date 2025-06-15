@@ -176,7 +176,7 @@ REDIS_DB_CELERY_BROKER = 1 # Celery任务传递系统占用库
 REDIS_DB_CELERY_RESULT = 2 # Celery任务执行结果存储占用库
 REDIS_DB_JWT_CACHE = 3 # JWT模块签名结果缓存占用库
 REDIS_DB_JWT_BLACKLIST = 4 # JWT黑名单模块存储占用库
-REDIS_DB_TOTP_QR_CACHE = 5 # TOTP二维码缓存占用库
+REDIS_DB_TOTP_QR_CACHE = 5 # TOTP二维码及secret缓存占用库
 REDIS_DB_USERS_REGISTER_CACHE = 6 # 用户模块预注册缓存信息占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 
@@ -190,7 +190,7 @@ REDIS_BASE_URL = (
 CACHES = { # Django缓存配置
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache', # 使用django-redis作为缓存后端
-        'LOCATION': f"{REDIS_BASE_URL}/4", # Redis连接地址(Django CACHE使用db-4库)
+        'LOCATION': f"{REDIS_BASE_URL}/14", # Redis连接地址(Django CACHE使用db-14库)
         'OPTIONS': { # 连接池配置
             'CLIENT_CLASS': 'django_redis.client.DefaultClient', # 使用默认客户端
             'decode_responses': True, # 自动字符串解码
