@@ -43,16 +43,16 @@ class RegisterPreview(APIView):
         service = RegisterService(validated_data, cf_token, remote_ip)
         
         # 4.Cloudflare Turnstile 人机验证
-        try:
-            is_human = await service.verify_human()
-            logger.info(f"[用户预注册处理] 请求IP:{remote_ip}, 邮箱: {validated_data.get('email')}")
-        except Exception as e:
-            logger.error(f"[用户注册预处理] Turnstile 请求异常: {e}")
-            return json_response(500, "人机验证服务异常, 请稍后重试", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # try:
+        #     is_human = await service.verify_human()
+        #     logger.info(f"[用户预注册处理] 请求IP:{remote_ip}, 邮箱: {validated_data.get('email')}")
+        # except Exception as e:
+        #     logger.error(f"[用户注册预处理] Turnstile 请求异常: {e}")
+        #     return json_response(500, "人机验证服务异常, 请稍后重试", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
-        if not is_human:
-            logger.warning(f"[用户注册预处理] 注册失败! 用户{validated_data.get('email')}人机验证未通过")
-            return json_response(403, "人机验证失败, 请刷新页面后重试", status_code=status.HTTP_403_FORBIDDEN)
+        # if not is_human:
+        #     logger.warning(f"[用户注册预处理] 注册失败! 用户{validated_data.get('email')}人机验证未通过")
+        #     return json_response(403, "人机验证失败, 请刷新页面后重试", status_code=status.HTTP_403_FORBIDDEN)
         
         # 5.缓存用户注册信息 + 发送邮箱验证码
         success, msg = await service.process()

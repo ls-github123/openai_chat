@@ -24,16 +24,16 @@ class RegisterService:
         self.remote_ip = remote_ip
         self.redis = get_redis_client(db=REDIS_DB_USERS_REGISTER_CACHE) # 异步Redis客户端
     
-    async def verify_human(self) -> bool:
-        """
-        校验 Cloudflare Turnstile 人机验证
-        """
-        secret_key = settings.TURNSTILE_USERS_SECRET_KEY
-        return await verify_turnstile_token_async(
-            token=self.cf_token,
-            secret_key=secret_key,
-            remoteip=self.remote_ip,
-        )
+    # async def verify_human(self) -> bool:
+    #     """
+    #     校验 Cloudflare Turnstile 人机验证
+    #     """
+    #     secret_key = settings.TURNSTILE_USERS_SECRET_KEY
+    #     return await verify_turnstile_token_async(
+    #         token=self.cf_token,
+    #         secret_key=secret_key,
+    #         remoteip=self.remote_ip,
+    #     )
     
     async def cache_register_info(self) -> Tuple[bool, str]:
         """
