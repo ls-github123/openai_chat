@@ -1,6 +1,5 @@
 # JWT 黑名单模块: 检查/加入黑名单, 基于Redis缓存机制
 import time
-from typing import Optional
 from openai_chat.settings.utils.locks import build_lock # redlock分布式锁封装
 from openai_chat.settings.utils.redis import get_redis_client
 from openai_chat.settings.base import REDIS_DB_JWT_BLACKLIST # JWT黑名单模块Redis存储占用库

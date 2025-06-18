@@ -1,6 +1,7 @@
 # 预注册服务类
-import json, random, time, asyncio
+import json, random, time
 from typing import Dict, Any, Tuple
+from django.contrib.auth import get_user_model
 from openai_chat.settings.utils.redis import get_redis_client # Redis客户端接口
 from openai_chat.settings.utils.locks import build_lock # Lock锁
 from openai_chat.settings.utils.logging import get_logger # 导入日志记录器
@@ -10,6 +11,8 @@ from django.conf import settings # 全局配置访问
 from openai_chat.settings.base import REDIS_DB_USERS_REGISTER_CACHE # 用户模块预注册缓存信息占用库
 
 logger = get_logger("users")
+
+User = get_user_model()
 
 class RegisterService:
     """
@@ -35,7 +38,7 @@ class RegisterService:
     #         remoteip=self.remote_ip,
     #     )
     
-    async def cache_register_info(self) -> Tuple[bool, str]:
+    def cache_register_info(self) -> Tuple[bool, str]:
         """
         缓存注册信息到 Redis(默认15分钟)
         - 成功: 返回True及生成的随机验证码
@@ -65,7 +68,7 @@ class RegisterService:
         
         return True, verify_code
     
-    async def send_verify_email(self, verify_code: str):
+    def send_verify_email(self, verify_code: str):
         """
         调用Celery异步任务发送验证码邮件
         """
@@ -74,28 +77,34 @@ class RegisterService:
             <p>您的注册验证码是: <strong>{verify_code}</strong></p>
             <P>验证码有效期 15 分钟, 如非本人操作请忽略此邮件。</P>
         """
-        await asyncio.to_thread(
-            send_email_async_task,
+        send_email_async_task(
             to_email = self.email,
             subject = subject,
             html_content = html_content,
         )
         
-    async def process(self) -> Tuple[bool, str]:
+    def process(self) -> Tuple[bool, str]:
         """
         注册流程处理器, 封装:
+        - 检查邮箱是否已注册
         - 获取锁
         - 缓存数据
         - 发送邮件
         :return: (是否成功, 提示消息)
         """
+        # 邮箱重复性检查(校验输入的邮箱是否已注册)
+        if User.objects.filter(email=self.email).exists():
+            logger.warning(f"[用户注册] 预注册失败: 邮箱{self.email} 已存在")
+            return False, "该邮箱已注册，请直接登录或使用找回密码功能"
+        
+        # 注册锁互斥控制(防止重复提交)
         lock_key = f"lock:register:{self.email}"
         lock = build_lock(lock_key, ttl=5000, strategy="safe") # 使用Redlock分布式锁
         
         with lock:
-            success, code = await self.cache_register_info()
+            success, code = self.cache_register_info()
             if not success:
                 return False, "验证码已发送, 请勿重复操作"
-            await self.send_verify_email(code)
-            logger.info(f"[用户注册] {self.email} 注册流程完成, 验证码已发送")
+            self.send_verify_email(code)
+            logger.info(f"[用户注册] {self.email} 预注册流程完成, 验证码已发送")
             return True, "验证码邮件已发送, 请注意查收"

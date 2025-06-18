@@ -7,7 +7,7 @@ from users.serializers.auth_login_serializer import LoginSerializer
 from openai_chat.settings.utils.jwt.jwt_token_service import TokenService
 from openai_chat.settings.utils.redis import get_redis_client
 from django.conf import settings
-from openai_chat.settings.utils.cloudflare_turnstile import verify_turnstile_token_async # Turnstile人机验证
+# from openai_chat.settings.utils.cloudflare_turnstile import verify_turnstile_token_async # Turnstile人机验证
 from openai_chat.settings.base import REDIS_DB_JWT_CACHE
 from openai_chat.settings.utils.logging import get_logger
 

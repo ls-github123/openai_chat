@@ -1,5 +1,5 @@
 # 用户预注册处理视图
-from typing import Dict, Any, cast, Optional
+from typing import Dict, Any, cast
 from rest_framework.views import APIView # DRF基础视图类
 from rest_framework.response import Response # 标准响应封装
 from rest_framework import status
@@ -21,7 +21,7 @@ class RegisterPreview(APIView):
     """
     permission_classes = [AllowAny]
     
-    async def post(self, request):
+    def post(self, request):
         # 1.数据验证
         serializer = RegisterSerializer(data=request.data)
         if not serializer.is_valid():
@@ -55,7 +55,7 @@ class RegisterPreview(APIView):
         #     return json_response(403, "人机验证失败, 请刷新页面后重试", status_code=status.HTTP_403_FORBIDDEN)
         
         # 5.缓存用户注册信息 + 发送邮箱验证码
-        success, msg = await service.process()
+        success, msg = service.process()
         if not success:
             return json_response(429, msg, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
         

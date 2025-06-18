@@ -5,7 +5,7 @@ from openai_chat.settings.utils.redis import get_redis_client
 from openai_chat.settings.base import REDIS_DB_JWT_CACHE
 from users.totp import verify_login_totp
 from openai_chat.settings.utils.logging import get_logger
-from login_service import LOGIN_CACHE_PREFIX # 预登录缓存Redis key
+from .login_service import LOGIN_CACHE_PREFIX # 预登录缓存Redis key
 
 logger = get_logger("users")
 

@@ -26,6 +26,7 @@ def send_email_async_task(self, to_email: str, subject: str, html_content: str, 
     result = asyncio.run(send_email(to_email, subject, html_content, from_email))
     if result:
         logger.info(f"[任务] ✅邮件已发送给 {to_email}")
+        return result, f"✅邮件发送成功, 已发送: {to_email}"
     else:
         logger.error(f"[任务] ❌ 邮件发送失败 -> {to_email}")
-    return result
+        return False, "❌邮件发送失败"

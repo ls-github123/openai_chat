@@ -211,7 +211,7 @@ class AzureRS256Verifier:
         - 避免频繁初始化 Azure 和 Redis 客户端
         - 可直接用于需要JWT验证的模块
         """
-        if cls._instance is None:
+        if cls._instance is None or not hasattr(cls._instance, "debug"):
             from django.conf import settings
             cls._instance = cls(
                 vault_url = settings.AZURE_VAULT_URL,

@@ -1,6 +1,5 @@
 from typing import Dict, Any, cast
 from rest_framework.views import APIView
-from rest_framework.exceptions import ValidationError
 from openai_chat.settings.utils.logging import get_logger
 from openai_chat.settings.utils.response_wrapper import json_response
 from users.services.login_totp_verify_service import LoginTOTPVerifyService # 用户登录服务类(二阶段)

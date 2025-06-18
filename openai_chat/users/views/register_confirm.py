@@ -18,7 +18,7 @@ class RegisterConfirmView(APIView):
     """
     permission_classes = [AllowAny]
     
-    async def post(self, request: Request):
+    def post(self, request: Request):
         # 1.获取传入参数并进行类型安全校验
         data: Dict[str, Any] = cast(Dict[str, Any], request.data)
         email = data.get("email", "").strip().lower()
@@ -32,17 +32,17 @@ class RegisterConfirmView(APIView):
         service = ConfirmRegisterService(email=email, verify_code=verify_code)
         
         # 3.验证码校验
-        is_valid, msg, cached_info = await service.validate_code()
+        is_valid, msg, cached_info = service.validate_code()
         if not is_valid:
             return json_response(403, msg, status_code=status.HTTP_403_FORBIDDEN)
         
         # 4.写入数据库 + 并发锁
-        success, db_msg = await service.create_user(cached_info)
+        success, db_msg = service.create_user(cached_info)
         if not success:
             return json_response(409, db_msg, status_code=status.HTTP_409_CONFLICT)
         
         # 5.清理注册信息缓存
-        await service.clear_cache()
+        service.clear_cache()
         
         # 6.返回成功响应
         return json_response(200, "账户注册成功", status_code=status.HTTP_200_OK)
