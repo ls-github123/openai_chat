@@ -79,3 +79,9 @@ def test_send_email(request):
         "to": to_email,
         "subject": subject
     })
+    
+    
+class TestJWT(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        return Response({"success": "JWT认证通过"})
