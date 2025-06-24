@@ -24,7 +24,7 @@ class LogoutView(APIView):
                 return json_response(code=400, msg="未检测到有效access_token")
             
             # 获取请求体中的 refresh_token
-            refresh_token = request.data.get("refresh_token").strip()
+            refresh_token = request.data.get("refresh_token", "").strip()
             if not refresh_token:
                 return json_response(code=400, msg="缺少 refresh_token")
             if not isinstance(refresh_token, str):
@@ -36,6 +36,8 @@ class LogoutView(APIView):
             # 拉黑 refresh_token
             LogoutService(token=refresh_token, token_type="refresh").execute()
             
+            return json_response(code=200, msg="安全退出登录成功")
+        
         except Exception as e:
             logger.warning(f"[LogoutView] 退出登录失败: {e}")
             return json_response(
