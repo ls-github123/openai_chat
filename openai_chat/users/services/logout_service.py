@@ -1,4 +1,4 @@
-from openai_chat.settings.utils.jwt.jwt_blacklist import add_to_blacklist # 令牌黑名单函数
+from openai_chat.settings.utils.jwt.jwt_token_service import TokenRevoker # JWT Token拉黑器
 from openai_chat.settings.utils.jwt.jwt_verifier import AzureRS256Verifier
 from openai_chat.settings.utils.logging import get_logger
 from typing import Optional
@@ -24,12 +24,20 @@ class LogoutService:
             
             jti = payload.get("jti") # 从pyload中提取唯一标识jti字段
             exp = payload.get("exp") # 从payload中提取 exp 字段
+            user_id = payload.get("sub") # 从 payload 中获取 sub 字段
             
-            if not jti or not exp:
-                raise RuntimeError("Token缺少 jti 或 exp 字段, 无法安全退出登录")
+            if not all([jti, exp, user_id]):
+                raise RuntimeError("Token缺少必要字段 jti/exp/sub")
             
-            add_to_blacklist(self.token, exp)
-            logger.info(f"[LogoutService] 成功将 {self.token_type} 令牌加入黑名单, jti={jti}")
+            if not isinstance(exp, int):
+                raise RuntimeError("Token exp 字段类型非法")
+            
+            # 使用统一封装类拉黑接口
+            revoker = TokenRevoker(jti=str(jti), exp=exp, user_id=user_id, token_type=self.token_type)
+            if revoker.revoke_token():
+                logger.info(f"[LogoutService] 用户 {user_id} 成功注销 {self.token_type} 令牌, jti={jti}")
+            else:
+                raise RuntimeError("拉黑失败, 请重试")
         except Exception as e:
-            logger.error(f"[LogoutService] token 加入黑名单失败: {e}")
+            logger.error(f"[LogoutService] {self.token_type}令牌加入黑名单失败: {e}")
             raise RuntimeError("安全退出登录失败, 请稍后重试")

@@ -9,7 +9,12 @@ import uuid
 from typing import Dict, Optional
 from django.conf import settings
 
-def build_jwt_payload(user_id: str, scope: Optional[str] = None, lifetime: Optional[int] = None, token_type: str = "access") -> Dict:
+def build_jwt_payload(
+    user_id: str,
+    scope: Optional[str] = None,
+    lifetime: Optional[int] = None,
+    token_type: str = "access"
+    ) -> Dict:
     """
     构造 JWT 标准载荷 Payload
     :param user_id: 用户唯一标识(用户ID)
@@ -18,7 +23,7 @@ def build_jwt_payload(user_id: str, scope: Optional[str] = None, lifetime: Optio
     :param token_type: JWT类型(如"access"或"refresh"),影响有效期与权限
     :return: dict 格式 JWT Payload
     """
-    now = int(time.time()) # 当前时间戳(单位:秒)
+    now = time.time_ns() // 1_000_000_000 # 精确时间戳(单位:秒)
     
     # 动态获取有效期(若未显式)
     if lifetime is None:

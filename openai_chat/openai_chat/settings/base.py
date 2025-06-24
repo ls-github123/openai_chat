@@ -98,7 +98,7 @@ JWT_ISSUER = "openai-chat.xyz" # JWT 签发方标识
 JWT_AUDIENCE = "openai_chat_user" # JWT接收方标识
 JWT_SCOPE_DEFAULT = "user" # 默认权限范围
 # JWT 令牌生命周期配置
-JWT_ACCESS_TOKEN_LIFETIME = 60 * 15 # Access Token默认有效期(15分钟)
+JWT_ACCESS_TOKEN_LIFETIME = 60 * 60 # Access Token默认有效期(60分钟)
 JWT_REFRESH_TOKEN_LIFETIME = 60 * 60 * 24 * 7 # Refresh Token默认有效期(7天)
 
 

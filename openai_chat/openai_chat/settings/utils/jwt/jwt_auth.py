@@ -10,7 +10,6 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from django.contrib.auth.models import AbstractBaseUser
 from .jwt_verifier import AzureRS256Verifier # 封装的RS256验证器
-from .jwt_blacklist import is_blacklisted # JWT黑名单校验
 from users.models import User # 用户数据库模型
 from openai_chat.settings.utils.logging import get_logger
 
@@ -21,6 +20,7 @@ class JWTAuthentication(BaseAuthentication):
     自定义 JWT 认证类: 用于 REST Framework 接口
     - 从请求中提取 JWT Token 并验证
     - 验证通过后返回 (用户实例, token字符串)
+    - 黑名单校验已在 AzureRS256Verifier.verify 中完成
     """
     def authenticate(self, request) -> Optional[Tuple[AbstractBaseUser, str]]:
         """
@@ -42,15 +42,14 @@ class JWTAuthentication(BaseAuthentication):
             verifier = AzureRS256Verifier.get_instance()
             payload = verifier.verify(token)
             
+            # Token类型强制校验
+            if payload.get("typ") != "access":
+                raise AuthenticationFailed("Token类型非法, 必须为 access 类型")
+            
             # 从令牌载荷中获取 jti 字段信息
             jti = payload.get("jti")
             if not jti:
                 raise AuthenticationFailed("无效Token: 缺少jti字段")
-            
-            # 黑名单校验
-            if is_blacklisted(jti):
-                logger.warning(f"[JWT黑名单拦截] jti={jti}, user_id={payload.get('sub')}")
-                raise AuthenticationFailed("Token已失效, 请重新登录")
             
             # 从 payload 中提取 sub (用户ID)
             user_id = payload.get("sub")
