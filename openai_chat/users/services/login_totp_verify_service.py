@@ -1,6 +1,6 @@
 from typing import cast
 from users.models import User # 自定义用户模型
-from openai_chat.settings.utils.jwt.jwt_token_service import TokenService
+from openai_chat.settings.utils.jwt.jwt_token_service import TokenIssuerService
 from openai_chat.settings.utils.redis import get_redis_client
 from openai_chat.settings.base import REDIS_DB_JWT_CACHE
 from users.totp import verify_login_totp
@@ -55,5 +55,5 @@ class LoginTOTPVerifyService:
         
         logger.info(f"[TOTP登录校验] 用户: {user.email} TOTP二次验证通过, 开始签发JWT")
         # 签发 access + refresh Token
-        token_service = TokenService(user)
+        token_service = TokenIssuerService(user)
         return token_service.issue_tokens()

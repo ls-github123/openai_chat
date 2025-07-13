@@ -14,30 +14,20 @@ from .jwt_signer import AzureRS256Signer # RS256签名器
 from .jwt_verifier import AzureRS256Verifier # 封装的RS256验证器
 from .jwt_blacklist import add_to_blacklist # 黑名单机制
 from openai_chat.settings.utils.logging import get_logger # 日志记录器
+from openai_chat.settings.utils.token_helpers import get_scope_for_user # 动态获取用户权限范围
 
 logger = get_logger("jwt")
+HEADER = {"alg": "RS256", "typ": "JWT"}
 
-class TokenService:
+class TokenIssuerService:
     """
-    JWT 令牌服务类
-    - 签发 access & refresh token
-    - 刷新 access token
+    JWT 令牌签发服务类
+    - 首次签发 access & refresh token
+    - 动态获取用户权限 scope
     """
-    HEADER = {"alg": "RS256", "typ": "JWT"}
-    
     def __init__(self, user: User):
         self.user = user
         self.signer = AzureRS256Signer.get_instance()
-    
-    def _get_scope_for_user(self) -> str:
-        """
-        根据用户权限动态确定 access_token 的 scope 值
-        """
-        if self.user.is_superuser:
-            return "super"
-        elif self.user.is_staff:
-            return "admin"
-        return "user"
     
     def issue_tokens(self) -> Dict[Literal["access", "refresh"], str]:
         """
@@ -48,7 +38,7 @@ class TokenService:
         
         try:
             # 获取 access token 的权限范围
-            access_scope = self._get_scope_for_user()
+            access_scope = get_scope_for_user(self.user)
             
             # 构造 Access Token 载荷
             access_payload = build_jwt_payload(
@@ -67,8 +57,8 @@ class TokenService:
             )
             
             # 执行 Azure Key Vault 执行签名
-            access_token = self.signer.sign(self.HEADER, access_payload)
-            refresh_token = self.signer.sign(self.HEADER, refresh_payload)
+            access_token = self.signer.sign(HEADER, access_payload)
+            refresh_token = self.signer.sign(HEADER, refresh_payload)
             
             return {
                 "access": access_token,
@@ -79,45 +69,92 @@ class TokenService:
             logger.error(f"[TokenService] 令牌签发失败: {traceback.format_exc()}")
             raise RuntimeError("令牌签发失败, 请稍后重试")
     
-    def refresh_access_token(self, refresh_token: str) -> str:
+class TokenRefreshService:
+    """
+    JWT令牌刷新服务类
+    - 根据已验证的 refresh_token 刷新新的 access_token
+    - 支持滑动更新 refresh token
+    """
+    def __init__(self, refresh_token: str):
+        """
+        初始化JWT令牌刷新服务
+        """
+        self.refresh_token = refresh_token
+        self.signer = AzureRS256Signer.get_instance()
+        self.verifier = AzureRS256Verifier.get_instance()
+    
+    def _get_user(self, user_id: str) -> User:
+        """
+        根据用户ID获取用户对象
+        """
+        try:
+            return User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            logger.error(f"[TokenRefreshService] 用户{user_id}不存在, 无法刷新令牌")
+            raise ValueError("用户不存在, 无法刷新令牌")
+    
+    def refresh_access_token(self) -> Dict[str, str]:
         """
         根据已验证的 refresh_token payload 刷新新的 access_token
         :param refresh_payload: 解码后的payload, 必须包含 typ=refresh 和 sub 字段
-        :return: 新的 access_token 字符串
+        :return: 新的 access_token 字符串, 新的 refresh token 字符串
         """
-        logger.debug(f"[TokenService] 尝试刷新 access token, 传入refresh_token: {refresh_token}")
-        
-        # 令牌完整签名 + 黑名单 + 字段校验
-        verifier = AzureRS256Verifier.get_instance()
-        payload = verifier.verify(refresh_token)
+        try:
+            # 令牌完整签名 + 黑名单 + 字段校验
+            payload = self.verifier.verify(self.refresh_token)
+        except Exception:
+            logger.warning(f"[TokenRefreshService] Refresh Token 验证失败: {traceback.format_exc()}")
+            raise ValueError("Refresh Token 无效或已过期")
         
         # 再次校验 typ 字段,确保传入的令牌类型只能为 refresh_token
-        if payload.get("typ") != "refresh":
-            raise ValueError("提供的Token并非Refresh类型")
+        token_type = payload.get("typ")
+        if token_type != "refresh":
+            logger.critical(f"[TokenRefreshService] 非法Token类型: {token_type}, 期望 refresh")
+            raise ValueError("提供的Token非Refresh类型")
         
         user_id = payload.get("sub")
-        if not user_id:
-            raise ValueError("RefreshToken缺少 sub 字段")
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if not user_id or not jti or not exp:
+            raise ValueError("RefreshToken缺少关键字段(sub/jti/exp)")
         
-        try:
-            self.user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
-            raise ValueError("对应用户不存在")
+        # 确认用户是否存在
+        self.user = self._get_user(user_id)
+        
+        # 确认用户存在后, 将原来的 token 加入黑名单
+        revoker = TokenRevoker(jti=jti, exp=exp, user_id=user_id, token_type="refresh")
+        if not revoker.revoke_token():
+            logger.error(
+                f"[TokenRefreshService] 原Refresh Token加入黑名单失败: jti={jti}, user_id={user_id}"
+            )
+            raise RuntimeError("Refresh Token注销失败, 请稍后重试")
         
         # 动态获取用户权限
-        scope = self._get_scope_for_user()
+        scope = get_scope_for_user(self.user)
         
         # 构造新的 access token 载荷
-        access_payload = build_jwt_payload(
+        new_access_payload = build_jwt_payload(
             user_id=user_id,
             scope=scope,
             lifetime=settings.JWT_ACCESS_TOKEN_LIFETIME,
             token_type="access",
         )
+        new_access_token = self.signer.sign(HEADER, new_access_payload)
         
-        header = {"alg": "RS256", "typ": "JWT"}
-        return self.signer.sign(header, access_payload)
-    
+        # 构造新的 refresh token 载荷(滑动更新)
+        new_refresh_payload = build_jwt_payload(
+            user_id=user_id,
+            scope="refresh", # 固定标记 refresh 类型作用域
+            lifetime=settings.JWT_REFRESH_TOKEN_LIFETIME,
+            token_type="refresh",
+        )
+        new_refresh_token = self.signer.sign(HEADER, new_refresh_payload)
+        
+        return {
+            "access": new_access_token,
+            "refresh": new_refresh_token
+        }
+
 class TokenRevoker:
     """
     JWT Token拉黑器
@@ -130,7 +167,7 @@ class TokenRevoker:
         :param jti: Token 唯一标识
         :param exp: Token 过期时间戳(秒)
         """
-        self.user_id = user_id or "unknow"
+        self.user_id = user_id or "unknown"
         self.jti = jti
         self.exp = exp
         self.token_type = token_type

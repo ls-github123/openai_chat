@@ -4,7 +4,7 @@ from typing import Dict, Any, Union, cast
 from django.contrib.auth import authenticate
 from users.models import User
 from users.serializers.auth_login_serializer import LoginSerializer
-from openai_chat.settings.utils.jwt.jwt_token_service import TokenService
+from openai_chat.settings.utils.jwt.jwt_token_service import TokenIssuerService
 from openai_chat.settings.utils.redis import get_redis_client
 from django.conf import settings
 # from openai_chat.settings.utils.cloudflare_turnstile import verify_turnstile_token_async # Turnstile人机验证
@@ -37,7 +37,25 @@ class LoginService:
         self.serializer = LoginSerializer(data=data) # DRF序列化器
         self.user: Union[User, None] = None
         self.redis = get_redis_client(db=REDIS_DB_JWT_CACHE)
+    
+    def _build_user_info(self) -> dict:
+        """
+        构建前端需要的基础用户信息, 避免字段暴露过多
+        """
+        assert self.user is not None
+        profile = getattr(self.user, "profile", None)
+        avatar_url = profile.avatar if profile and profile.avatar else ""
         
+        return {
+            "id": str(self.user.id), # 用户ID
+            "email": self.user.email, # 用户邮箱
+            "username": self.user.username, # 用户名
+            "avatar": avatar_url, # 用户头像URL
+            "organization": self.user.organization, # 组织ID
+            "is_staff": self.user.is_staff, # 是否为后台管理员
+            "is_superuser": self.user.is_superuser, # 是否为超级管理员
+        }
+    
     def validate_credentials(self) -> dict:
         """
         校验 Cloudflare Turnstile 人机验证
@@ -76,11 +94,13 @@ class LoginService:
             }
             
         # 若未启用TOTP, 直接签发 JWT
-        token_service = TokenService(user)
+        token_service = TokenIssuerService(user)
         tokens = token_service.issue_tokens()
+        user_info = self._build_user_info() # 构建用户信息
         return {
             "require_totp": False,
-            **tokens # 展开 access 和 refresh字段
+            **tokens, # 展开 access 和 refresh字段
+            "user": user_info
         }
     
     def _cache_pending_login(self) -> None:
