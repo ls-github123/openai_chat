@@ -10,6 +10,7 @@ from django.conf import settings
 # from openai_chat.settings.utils.cloudflare_turnstile import verify_turnstile_token_async # Turnstile人机验证
 from openai_chat.settings.base import REDIS_DB_JWT_CACHE
 from openai_chat.settings.utils.logging import get_logger
+from users.services.user_info_service import UserInfoService # 用户信息服务类(携带JWT查询用户信息)
 
 logger = get_logger("users")
 
@@ -37,24 +38,6 @@ class LoginService:
         self.serializer = LoginSerializer(data=data) # DRF序列化器
         self.user: Union[User, None] = None
         self.redis = get_redis_client(db=REDIS_DB_JWT_CACHE)
-    
-    def _build_user_info(self) -> dict:
-        """
-        构建前端需要的基础用户信息, 避免字段暴露过多
-        """
-        assert self.user is not None
-        profile = getattr(self.user, "profile", None)
-        avatar_url = profile.avatar if profile and profile.avatar else ""
-        
-        return {
-            "id": str(self.user.id), # 用户ID
-            "email": self.user.email, # 用户邮箱
-            "username": self.user.username, # 用户名
-            "avatar": avatar_url, # 用户头像URL
-            "organization": self.user.organization, # 组织ID
-            "is_staff": self.user.is_staff, # 是否为后台管理员
-            "is_superuser": self.user.is_superuser, # 是否为超级管理员
-        }
     
     def validate_credentials(self) -> dict:
         """
@@ -96,7 +79,9 @@ class LoginService:
         # 若未启用TOTP, 直接签发 JWT
         token_service = TokenIssuerService(user)
         tokens = token_service.issue_tokens()
-        user_info = self._build_user_info() # 构建用户信息
+        
+        # 使用 UserInfoService 获取用户信息
+        user_info = UserInfoService.get_user_info(str(user.id))
         return {
             "require_totp": False,
             **tokens, # 展开 access 和 refresh字段

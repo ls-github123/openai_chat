@@ -13,10 +13,15 @@ urlpatterns = [
     
     # 登录
     path("login/", LoginPreView.as_view(), name="login"), # 登录阶段一：邮箱+密码+人机验证
+    
+    # TOTP二次验证接口
     path("login/totp/", LoginTOTPVerifyView.as_view(), name="login_totp"), # 登录阶段二：TOTP 二次验证
     
     # 用户令牌刷新
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"), # 刷新 access_token 和 refresh_token
+    
+    # 用户信息获取/查询
+    # path("userinfo/"),
     
     # 退出
     path("logout/", LogoutView.as_view(), name="logout"), # 用户退出登录
