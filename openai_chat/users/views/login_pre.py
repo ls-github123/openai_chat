@@ -33,11 +33,11 @@ class LoginPreView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True) # DRF自动抛出参数校验异常
         validated_data = cast(Dict[str, Any], serializer.validated_data)
-        
+                
         try:
             # 执行登录逻辑(密码校验 + TOTP判断 + 人机验证)
             service = LoginService(
-                data=validated_data,
+                data=validated_data, # 验证登录后的数据
                 ip=remote_ip,
                 cf_token=cf_token
             )

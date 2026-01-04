@@ -179,6 +179,8 @@ REDIS_DB_JWT_BLACKLIST = 4 # JWT黑名单模块存储占用库
 REDIS_DB_TOTP_QR_CACHE = 5 # TOTP二维码及secret缓存占用库
 REDIS_DB_USERS_REGISTER_CACHE = 6 # 用户模块预注册缓存信息占用库
 REDIS_DB_USERS_INFO_CACHE = 7 # 用户信息缓存占用库
+REDIS_DB_USERS_STATE = 8 # 用户状态事实源占用库
+REDIS_DB_USERS_LOGIN_PENDING = 9 # 用户登录预登录缓存占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 
 # Redis URL 基础前缀
