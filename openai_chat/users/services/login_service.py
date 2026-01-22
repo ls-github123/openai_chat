@@ -1,6 +1,7 @@
 # 用户登录服务类
 from __future__ import annotations # 延迟类型注解解析
 import time, json
+from datetime import timedelta # 处理 token lifetime 兼容 timedelta
 import secrets # 用于生成随机challenge_id
 from typing import Dict, Any, Optional, cast
 from users.models import User # 用户模型
@@ -10,8 +11,8 @@ from openai_chat.settings.utils.redis import get_redis_client
 
 # from openai_chat.settings.utils.cloudflare_turnstile import verify_turnstile_token_async # Turnstile人机验证
 from openai_chat.settings.base import REDIS_DB_USERS_LOGIN_PENDING
+from openai_chat.settings.base import JWT_ACCESS_TOKEN_LIFETIME # Access token有效期配置
 from openai_chat.settings.utils.logging import get_logger
-from users.services.user_info_service import UserInfoService # 用户信息服务类(携带JWT查询用户信息)
 from users.services.auth.guards import ensure_user_can_login # 登录前置用户状态校验
 from users.services.user_state_service import UserStateService # 用户状态事实源同步服务类
 
@@ -19,6 +20,10 @@ logger = get_logger("users")
 
 LOGIN_PENDING_PREFIX = "login:pending" # 预登录缓存Redis key
 LOGIN_TTL_SECONDS = 300 # 预登录缓存有效期(秒)
+
+# 输入防御: 限制长度(避免超长 payload 带来的压力/日志污染)
+MAX_EMAIL_LEN = 254
+MAX_PASSWORD_LEN = 1024
 
 class LoginService:
     """
@@ -31,7 +36,7 @@ class LoginService:
     - 同步用户状态事实源(Redis db=8)
     - 判断TOTP状态:
         - 若启用TOTP, 写入pending缓存, 返回 challenge_id 并进入二次验证流程
-        - 若未启用TOTP, 直接签发 JWT, 并返回 access/refresh token + user_info
+        - 若未启用TOTP, 直接签发 JWT, 并返回 access/refresh token
     """
     def __init__(self, data: Dict[str, Any], ip: str, cf_token: str):
         """
@@ -50,7 +55,7 @@ class LoginService:
     def validate_credentials(self) -> dict:
         """
         登录入口(阶段一):
-        :return: dict(包含require_totp / tokens/ user_info等)
+        :return: dict(包含require_totp / tokens 等)
         """
         # # 人机验证(防止爆破登录)
         # if not verify_turnstile_token_async(self.cf_token, settings.TURNSTILE_USERS_SECRET_KEY, self.remote_ip):
@@ -65,9 +70,13 @@ class LoginService:
         email_raw = str(data.get("email", "")).strip()
         password = str(data.get("password", "")).strip()
         
-        # 防御式校验:避免空值穿透
+        # 防御式校验:避免空值穿透(空值 + 长度)
         if not email_raw or not password:
             logger.warning("[Login] rejected: empty email/password ip=%s", self.remote_ip)
+            raise ValueError("邮箱或密码错误")
+        
+        if len(email_raw) > MAX_EMAIL_LEN or len(password) > MAX_PASSWORD_LEN:
+            logger.warning("[Login] rejected: too long input ip=%s", self.remote_ip)
             raise ValueError("邮箱或密码错误")
         
         # 2. 查询用户(对外统一错误信息, 避免枚举攻击)
@@ -109,13 +118,28 @@ class LoginService:
         token_service = TokenIssuerService(user)
         tokens = token_service.issue_tokens()
         
-        # 返回用户快照(缓存命中则不查询DB, 未命中则回源并缓存)
-        user_info = UserInfoService.get_user_info(str(user.id))
         return {
             "require_totp": False,
             **tokens, # 展开 access 和 refresh字段
-            "user": user_info
+            "token_type": "Bearer",
+            "expires_in": self._get_expires_in_seconds(JWT_ACCESS_TOKEN_LIFETIME),
         }
+    
+    @staticmethod
+    def _get_expires_in_seconds(value: Any) -> int:
+        """
+        将 settings 中的 token lifetime 统一转换为秒(int)
+        - int/float/str: 直接转 int
+        - timedelta: total_seconds
+        """
+        if isinstance(value, timedelta):
+            return int(value.total_seconds())
+        
+        try:
+            return int(value)
+        except Exception:
+            logger.error("[Login] invalid JWT_ACCESS_TOKEN_LIFETIME=%r", value)
+            return 900
     
     @staticmethod
     def _get_user_by_email(email: str) -> Optional[User]:
@@ -139,11 +163,9 @@ class LoginService:
         
         # 生成随机 challenge_id 作为Redis key
         challenge_id = secrets.token_urlsafe(32) # 32位长度的随机字符串
-        
         cache_key = f"{LOGIN_PENDING_PREFIX}:{challenge_id}"
         cache_value = {
             "uid": str(self.user.id),
-            "email": self.user.email,
             "ip": self.remote_ip,
             "ts": int(time.time()), # 缓存时间戳
         }
@@ -155,8 +177,11 @@ class LoginService:
                 LOGIN_TTL_SECONDS,
                 json.dumps(cache_value, ensure_ascii=False),
             )
-            logger.debug(f"[Login] 用户预登录信息缓存成功: key={cache_key}")
+            logger.debug("[Login] pending cache ok key=%s", cache_key)
             return challenge_id # 返回 challenge_id 供前端使用
         except Exception as e:
-            logger.error("[Login] pending cache failed key=%s uid=%s err=%s", cache_key, self.user.id, e)
+            logger.error(
+                "[Login] pending cache failed key=%s uid=%s err=%s",
+                cache_key, self.user.id, e,
+            )
             raise RuntimeError("系统内部错误, 请稍后再试")

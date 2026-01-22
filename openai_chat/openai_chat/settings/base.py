@@ -62,12 +62,10 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES':(
         # 默认权限控制类:
         # - 默认所有 API 仅允许“已认证用户”访问
-        # - 未登录用户访问任何受保护接口时将返回 403 Forbidden
-        # 注:可在视图中覆盖该默认行为
-        # 可选替换方案包括:
-        # - AllowAny：允许任何人访问（开发/调试阶段可用）
-        # - IsAdminUser：仅允许 is_staff=True 的后台管理员访问
-        # - DjangoModelPermissions：基于模型权限（view/add/change/delete）控制访问
+        # - 未认证请求通常返回 401 Unauthorized
+        # - 已认证但无权限的请求返回 403 Forbidden
+        # 注: 最终对前端返回的错误结构与错误码
+        #   由统一异常处理器进行规范化封装
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_RENDERER_CLASSES': (
@@ -76,6 +74,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PARSER_CLASSES': (
         'rest_framework.parsers.JSONParser', # 限制只接受 JSON 请求体
     ),
+    # 统一异常处理器
+    'EXCEPTION_HANDLER': 'openai_chat.settings.utils.drf_exception_handler.custom_exception_handler',
 }
 
 # === JWT 模块配置 ===
@@ -128,6 +128,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware', # 安全中间件
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware', # 处理跨域请求
+    'openai_chat.middlewares.request_id.RequestIdMiddleware', # 规范化 request(host, slash等)
     'corsheaders.middleware.CorsMiddleware', # 跨域配置中间件-cors处理
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -181,6 +182,7 @@ REDIS_DB_USERS_REGISTER_CACHE = 6 # 用户模块预注册缓存信息占用库
 REDIS_DB_USERS_INFO_CACHE = 7 # 用户信息缓存占用库
 REDIS_DB_USERS_STATE = 8 # 用户状态事实源占用库
 REDIS_DB_USERS_LOGIN_PENDING = 9 # 用户登录预登录缓存占用库
+REDIS_DB_IDEMPOTENCY = 10 # 接口幂等性占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 
 # Redis URL 基础前缀

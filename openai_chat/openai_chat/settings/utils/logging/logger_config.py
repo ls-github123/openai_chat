@@ -176,6 +176,11 @@ def build_logging():
                'level': 'DEBUG',
                'propagate': False,
             },
+           'idempotency': { # 接口幂等性模块 日志
+               'handlers': ['file_lock'],
+               'level': 'DEBUG',
+               'propagate': False,
+            },
            'project.redis_config': { # Redis客户端、连接池、连接状态 日志
                'handlers': ['file_db_redis'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                'level': 'INFO',
