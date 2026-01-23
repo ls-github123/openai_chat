@@ -1,5 +1,11 @@
 from .base import *
+from decouple import config, Csv
 
-DEBUG = False # 生产环境关闭DEBUG模式
-ENVIRONMENT = "prod" # 当前运行环境类型
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv())
+DEBUG = False
+ENVIRONMENT = "prod"
+
+ALLOWED_HOSTS = config(
+    "ALLOWED_HOSTS",
+    default="localhost, 127.0.0.1",
+    cast=Csv(),
+)

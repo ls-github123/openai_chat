@@ -12,7 +12,6 @@ from .config import get_config, SecretConfig, VaultClient # 从config.py导入�
 from pymongo import MongoClient # MongoDB客户端
 from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mysql数据库连接池
 from . import LOGGING # 导入日志配置
-from datetime import timedelta # 导入时间差对象,用于时间加减计算
 
 # 基础目录
 BASE_DIR = path_utils.BASE_DIR # 项目根路径
@@ -219,10 +218,26 @@ CELERY_TASK_SERIALIZER = 'json' # 任务序列化方式
 CELERY_RESULT_SERIALIZER = 'json' # 结果序列化方式
 
 # - 时区设置(与 Django 保持一致)
-CELERY_TIMEZONE = 'Asia/shanghai'
-CELERY_ENABLE_UTC = False
+CELERY_TIMEZONE = 'Asia/Shanghai'
+CELERY_ENABLE_UTC = True # UTC 时间兼容
 
+# 远端 Redis + 代理链路稳定性
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = None # dev/test 连接无限重试
+CELERY_BROKER_CONNECTION_TIMEOUT = 10 # 连接超时时间(秒)
+
+# 心跳(降低代理/ NAT idle timeout 导致的断联概率)
+CELERY_BROKER_HEARTBEAT = 10 # 秒
+
+# 降低断线后 "恢复未 ACK 消息" 的混乱度
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# 显式保持 Celery 5.X 默认行为, 避免升级默认值变化引发错误
+CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = False
+
+# --- 任务结果策略 ---
 # - 任务结果过期时间(单位:秒), 防止 Redis 堆满内存
+CELERY_TASK_IGNORE_RESULT = False
 CELERY_TASK_RESULT_EXPIRES = 3600 # 1小时
 
 
