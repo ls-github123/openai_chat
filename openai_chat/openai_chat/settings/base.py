@@ -182,6 +182,8 @@ REDIS_DB_USERS_INFO_CACHE = 7 # 用户信息缓存占用库
 REDIS_DB_USERS_STATE = 8 # 用户状态事实源占用库
 REDIS_DB_USERS_LOGIN_PENDING = 9 # 用户登录预登录缓存占用库
 REDIS_DB_IDEMPOTENCY = 10 # 接口幂等性占用库
+REDIS_DB_MAIL = 11 # 邮件通道: done/lock/cooldown/rate等
+REDIS_DB_DJANGO_CACHE = 14 # DJANGO 框架缓存占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 
 # Redis URL 基础前缀
@@ -194,7 +196,7 @@ REDIS_BASE_URL = (
 CACHES = { # Django缓存配置
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache', # 使用django-redis作为缓存后端
-        'LOCATION': f"{REDIS_BASE_URL}/14", # Redis连接地址(Django CACHE使用db-14库)
+        'LOCATION': f"{REDIS_BASE_URL}/{REDIS_DB_DJANGO_CACHE}", # Redis连接地址(Django CACHE使用db-14库)
         'OPTIONS': { # 连接池配置
             'CLIENT_CLASS': 'django_redis.client.DefaultClient', # 使用默认客户端
             'decode_responses': True, # 自动字符串解码

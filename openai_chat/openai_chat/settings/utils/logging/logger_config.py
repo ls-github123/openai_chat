@@ -62,7 +62,8 @@ def build_logging():
         'file_snowflake': file_handler('snowflake', 'DEBUG'), # snowflake分布式ID生成 日志
         'file_api': file_handler('api', 'WARNING'), # API模块 日志
         'file_users': file_handler('users', 'DEBUG'), # 用户模块 日志
-        'file_chat': file_handler('chat', 'WARNING'), # chat聊天模块 日志'
+        'file_chat': file_handler('chat', 'WARNING'), # chat聊天模块 日志
+        'file_celery': file_handler('celery', "INFO"), # Celery 任务队列 日志
         'file_email': file_handler('email', 'INFO'), # Resend 邮件发送服务API模块 日志
 	}
     
@@ -226,8 +227,29 @@ def build_logging():
                'level': 'DEBUG',
                'propagate': False,
             },
+        #    'tasks': {
+        #        'handlers': []
+        #     },
            'email_resend_client': { # Resend 邮件服务API封装 日志
                'handlers': ['file_email'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'celery': {
+               # celery 主日志
+               'handlers': ['file_celery'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'celery.worker': {
+               # celery worker模块日志
+               'handlers': ['file_celery'],
+               'level': 'INFO',
+               'propagate': False,
+            },
+           'celery.tasks': {
+               # celery task模块日志
+               'handlers': ['file_celery'],
                'level': 'INFO',
                'propagate': False,
             },
