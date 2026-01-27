@@ -1,116 +1,156 @@
+from __future__ import annotations
+"""
+Snowflake ID 生成模块
+
+目标：
+- import 阶段零 I/O：模块加载时不触发 Redis、不分配节点、不初始化 Snowflake 实例
+- 懒初始化：首次真正需要生成 ID 时，才从 Redis 获取/分配 (datacenter_id, machine_id)
+- 线程安全：多线程并发下只初始化一次 Snowflake 实例；ID 生成也线程安全
+- Fail-fast：初始化失败或时钟回拨等关键错误直接抛异常（禁止返回 None 造成隐性数据污染）
+"""
 import threading # 导入线程模块
 import time # 导入时间模块
-from .node_config import get_node_ids # 导入获取节点ID函数
 from openai_chat.settings.utils.logging import get_logger # 导入日志记录器
 from . import snowflake_const # Snowflake 全局常量配置
 
 logger = get_logger("project.snowflake.register")
 
-_snowflake_instance = None # 全局缓存 Snowflake 实例
-_snowflake_lock = threading.Lock() # 多线程并发互斥锁,确保只初始化一次
-
 class Snowflake:
     """
-    雪花算法核心实现类:用于生成全局唯一分布式ID
-    ID结构(64位):
-    - 41位时间戳(毫秒级, 相对于自定义epoch)
-    - 5位数据中心ID(最多32个)
-    - 5位机器ID(最多32个)
-    - 12位序列号(每毫秒最多生成4096个ID)
+    Snowflake 算法核心实现: 生产全局唯一 64-bit 分布式 ID
+    
+    ID结构(64 bit):
+    - 41 bit：时间戳（毫秒，相对自定义 epoch）
+    - 5  bit：datacenter_id（数据中心，0-31）
+    - 5  bit：machine_id（机器编号，0-31）
+    - 12 bit：sequence（序列号，同一毫秒内递增，0-4095）
+    
+    说明:
+    - 单实例在单进程内可安全生成 ID（内部有线程锁）
+    - 分布式唯一性依赖 datacenter_id + machine_id 的全局唯一分配
     """
-    def __init__(self, datacenter_id: int, machine_id: int):
-        self.datacenter_id = datacenter_id & snowflake_const.SNOWFLAKE_MAX_DATACENTER_ID # 数据中心ID限制为5位(0-31)
-        self.machine_id = machine_id & snowflake_const.SNOWFLAKE_MAX_MACHINE_ID # 机器ID限制为5位(0-31)
-        self.sequence = 0 # 序列号初始化为0
-        self.last_timestamp = -1 # 上次生成ID的时间戳初始化为-1
-        self.lock = threading.Lock() # 线程锁,确保多线程下的线程安全
-        self.epoch = snowflake_const.SNOWFLAKE_EPOCH # 自定义起始时间戳(2024-01-01 00:00:00)
+    def __init__(self, datacenter_id: int, machine_id: int) -> None:
+        # datacenter_id / machine_id 做位宽裁剪，确保落在合法范围
+        self.datacenter_id = datacenter_id & snowflake_const.SNOWFLAKE_MAX_DATACENTER_ID
+        self.machine_id = machine_id & snowflake_const.SNOWFLAKE_MAX_MACHINE_ID
         
-    def _timestamp(self):
-        """返回当前时间戳(单位:毫秒)"""
+        # 序列号: 同一毫秒内递增(最多4096)
+        self.sequence = 0
+        
+        # 上一次生成 ID 的时间戳(毫秒)
+        self.last_timestamp = -1
+        
+        # 线程锁: 保证多线程并发生成 ID 时，sequence 与 last_timestamp 的一致性
+        self._lock = threading.Lock()
+        
+        # 自定义 epoch(毫秒), 用于缩短 timestamp 位宽
+        self.epoch = snowflake_const.SNOWFLAKE_EPOCH
+    
+    @staticmethod
+    def _timestamp_ms() -> int:
+        """
+        获取当前时间戳(毫秒)
+        - 使用 time.time() 的秒级浮点数转换为毫秒
+        """
         return int(time.time() * 1000)
     
     def _wait_next_ms(self, last_timestamp: int) -> int:
         """
-        等待直到下一个毫秒,避免序列号溢出
-        :param last_timestamp: 上次生成ID的时间戳
-        :return: 下一个毫秒的时间戳
+        当同一毫秒内 sequence 用尽（溢出归零）时，阻塞等待下一毫秒
+        :param last_timestamp: 上一次生成 ID 的毫秒时间戳
+        :return: 下一毫秒时间戳
         """
-        ts = self._timestamp() # 获取当前时间戳
-        while ts <= last_timestamp: # 如果当前时间戳小于等于上次生成的时间戳
-            ts = self._timestamp() # 继续等待
+        ts = self._timestamp_ms()
+        while ts <= last_timestamp:
+            ts = self._timestamp_ms()
         return ts
     
-    def get_id(self):
+    def next_id(self) -> int:
         """
-        生成下一个全局唯一ID(雪花ID),线程安全
-        :return: 64位整数ID
+        生成下一个 Snowflake ID（线程安全）
+        :return: 64位整数 ID
         """
-        with self.lock: # 获取线程锁,确保线程安全
-            ts = self._timestamp() # 获取当前时间戳
-            if ts < self.last_timestamp:
-                # 如果当前时间戳小于上次生成的时间戳, 则抛出异常
-                logger.critical(f"[雪花ID异常] 系统时钟回拨: now={ts}, last={self.last_timestamp}")
-                raise Exception("Clock moved backwards. Refusing to generate id")
+        with self._lock:
+            ts = self._timestamp_ms()
             
-            # 如果当前时间戳等于上次生成的时间戳
+            # 1.时钟回拨检测: 当前时间戳小于上次时间戳 -> 直接失败
+            if ts < self.last_timestamp:
+                logger.critical(
+                    f"[Snowflake] clock moved backwards: now={ts}, last={self.last_timestamp}"
+                )
+                raise RuntimeError("Clock moved backwards. Refusing to generate id")
+            
+            # 2.同一毫秒: sequence 自增；若溢出则等待下一毫秒
             if ts == self.last_timestamp:
-                # 序列号加1,如果超过4095则等待下一毫秒
-                self.sequence = (self.sequence + 1) & snowflake_const.SNOWFLAKE_MAX_SEQUENCE # 序列号限制为12位(0-4095)
-                if self.sequence == 0: # 序列号溢出,等待下一毫秒
-                    ts = self._wait_next_ms(self.last_timestamp) # 等待下一毫秒
+                self.sequence = (self.sequence + 1) & snowflake_const.SNOWFLAKE_MAX_SEQUENCE
+                if self.sequence == 0:
+                    ts = self._wait_next_ms(self.last_timestamp)
             else:
-                self.sequence = 0 # 如果时间戳变化,则重置序列号为0
-            self.last_timestamp = ts # 更新上次生成ID的时间戳
-            # 组合返回全局唯一ID(雪花ID): 时间戳 | 数据中心ID | 机器ID | 序列号
-            snowflake_id = (
-                # 时间戳部分(41位)
+                # 3.新的毫秒: sequence 重置为 0
+                self.sequence = 0
+            
+            # 4.更新 last_timestamp
+            self.last_timestamp = ts
+            
+            # 5.组装 64-bit Snowflake ID
+            # 时间戳： (ts - epoch) 左移 timestamp_shift
+            # datacenter：左移 datacenter_shift
+            # machine：左移 machine_shift
+            # sequence：低位直接 OR
+            return (
                 ((ts - self.epoch) << snowflake_const.SNOWFLAKE_TIMESTAMP_SHIFT)
-                # 数据中心ID部分(5位)
                 | (self.datacenter_id << snowflake_const.SNOWFLAKE_DATACENTER_SHIFT)
-                # 机器ID部分(5位)
                 | (self.machine_id << snowflake_const.SNOWFLAKE_MACHINE_SHIFT)
-                # 序列号部分(12位)
                 | self.sequence
             )
-            return snowflake_id # 返回生成的64位整型ID
 
-# === 单例工厂函数,用于全局调用 ===
-def get_snowflake_id():
-    """
-    获取全局唯一雪花ID(延迟初始化单例)
-    :return: 64位整型ID
-    """
-    global _snowflake_instance
-    try:
-        if _snowflake_instance is None:
-            # 获取数据中心ID和机器ID
-            datacenter_id, machine_id = get_node_ids() # 调用配置函数获取节点ID
-            _snowflake_instance = Snowflake(datacenter_id, machine_id) # 创建雪花ID实例
-        return _snowflake_instance.get_id() # 返回生成的全局唯一ID
-    except Exception as e:
-        logger.error(f"[get_snowflake_id] 获取雪花ID失败: {e}")
-        return None # 如果发生异常,返回None
+# === 单例缓存 ===
+_snowflake_instance: Snowflake | None = None # 进程内 Snowflake 单例
+_snowflake_lock = threading.Lock() # 只保护初始化, 不保护 next_id
 
 def get_snowflake_instance() -> Snowflake:
     """
-    返回已初始化的 Snowflake 实例
-    若尚未初始化则从 Redis 获取节点编号并初始化
-    注: 用于非生成ID场景(如 守护线程、状态监控等)
-    :return: Snowflake 实例
+    获取 Snowflake 单例（懒加载 + 线程安全）
+    - 首次调用时触发 get_node_ids()
     """
-    global _snowflake_instance # 全局唯一雪花ID实例
-    if _snowflake_instance is None:
-        with _snowflake_lock: # 确保线程安全
-            if _snowflake_instance is None: # 再次检查是否已初始化
-                logger.info("[get_snowflake_instance] 开始初始化 Snowflake 实例")
-                try:
-                    datacenter_id, machine_id = get_node_ids() # 获取数据中心ID和机器ID
-                    _snowflake_instance = Snowflake(datacenter_id, machine_id) # 创建雪花ID实例
-                    logger.info(
-                        f"[get_snowflake_instance] 初始化成功: datacenter_id={datacenter_id}, machine_id={machine_id}"
-                    )
-                except Exception as e:
-                    logger.error(f"[get_snowflake_instance] 初始化失败: {e}")
-                    raise
-    return _snowflake_instance # 返回已初始化的 Snowflake 实例
+    global _snowflake_instance
+    
+    # 已初始化则直接返回(无锁)
+    if _snowflake_instance is not None:
+        return _snowflake_instance
+    
+    # 慢路径: 首次初始化加锁
+    with _snowflake_lock:
+        # 二次检查: 防止多个线程同时通过第一次检查
+        if _snowflake_instance is not None:
+            return _snowflake_instance
+        logger.info("[Snowflake] initializing instance...")
+        
+        import os, traceback
+        if os.getenv("SNOWFLAKE_DEBUG_STACK", "0") == "1":
+            logger.warning(
+                "[Snowflake] init stack (who triggered init):\n"
+                + "".join(traceback.format_stack(limit=50))
+            )
+        
+        # 延迟导入
+        # 避免 import 本模块时就导入 node_config 造成导入链膨胀
+        from .node_config import get_node_ids
+        
+        datacenter_id, machine_id = get_node_ids()
+        _snowflake_instance = Snowflake(datacenter_id, machine_id)
+        
+        logger.info(
+            f"[Snowflake] initialized: datacenter_id={datacenter_id}, machine_id={machine_id}"
+        )
+        return _snowflake_instance
+    
+def get_snowflake_id() -> int:
+    """
+    对外统一入口: 获取一个全局唯一 Snowflake ID
+    
+    生产级行为：
+    - 永远返回 int
+    - 初始化失败/Redis 失败/时钟回拨等关键错误直接抛异常
+    """
+    return get_snowflake_instance().next_id()

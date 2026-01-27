@@ -6,7 +6,7 @@
 - 配置安全设置和中间件
 - 日志配置统一
 """
-import os
+import json
 from openai_chat.settings.utils import path_utils # 导入路径工具模块
 from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
 from pymongo import MongoClient # MongoDB客户端
@@ -169,6 +169,29 @@ DATABASES = {
 REDIS_HOST = get_config('REDIS_HOST', default='127.0.0.1') # Redis主机地址
 REDIS_PORT = get_config('REDIS_PORT', default='6379') # Redis主机端口号
 REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD # Redis连接密码
+
+# === Redlock 分布式锁节点配置 ===
+_redlock_servers_json = get_config(
+    "REDLOCK_SERVERS_JSON",
+    default="",
+)
+
+_redlock_servers_json = str(_redlock_servers_json).strip()
+if _redlock_servers_json:
+    # 如果显式配置 redlock 节点列表
+    REDLOCK_SERVERS = json.loads(_redlock_servers_json)
+    if not isinstance(REDLOCK_SERVERS, list) or not REDLOCK_SERVERS:
+        raise ValueError("REDLOCK_SERVERS_JSON 必须解析为非空 list")
+else:
+    # 如果未配置,则默认使用当前单节点 Redis
+    REDLOCK_SERVERS = [
+        {
+            "host": REDIS_HOST,
+            "PORT": int(REDIS_PORT),
+            "db": 0, # 锁专用DB
+            "password": REDIS_PASSWORD,
+        }
+    ]
 
 # === Redis DB 编号映射 ===
 # REDIS_DB_LOCK = 0 # RedLock锁(Redis锁)占用库/已默认配置

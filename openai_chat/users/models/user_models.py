@@ -4,7 +4,6 @@ from django.conf import settings # 获取 AUTH_USER_MODEL配置
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin # 自定义用户模型基类
 from users.managers import CutsomUserManager # 自定义用户管理器,支持邮箱注册、权限设定
 from openai_chat.settings.utils.snowflake import get_snowflake_id # 雪花算法模块:生成用户ID
-from openai_chat.settings.base import AUTH_USER_MODEL # 引入用户认证系统用户模型
 
 # === 用户主模型 ===
 class User(AbstractBaseUser, PermissionsMixin):
@@ -16,7 +15,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     - 密码字段由 AbstractBaseUser 提供, 自动加密存储
     """
     # editable=False 该字段不会在Django管理后台或表单中显示,也不能被编辑器修改
-    id = models.BigIntegerField('用户ID', primary_key=True, default=get_snowflake_id, editable=False, help_text="雪花算法生成的用户ID")
+    id = models.BigIntegerField('用户ID', primary_key=True, editable=False, help_text="雪花算法生成的用户ID")
     email = models.EmailField('邮箱地址', unique=True, null=False, blank=False, help_text="用于用户账户登录与验证")
     username = models.CharField('用户名', max_length=150, unique=True, null=False, blank=False, help_text="可选用户名")
     phone = models.CharField("手机号", max_length=20, null=True, blank=True, help_text="可选添加手机号")
@@ -48,6 +47,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     def __str__(self):
         return self.email
+    
+    def save(self, *args, **kwargs):
+        """
+        主键赋值策略:
+        - 仅当新对象且 id 为空时生成 Snowflake ID
+        - 避免 Django 启动期间实例化模型触发 get_default()
+        """
+        if self._state.adding and not self.id:
+            self.id = get_snowflake_id()
+        super().save(*args, **kwargs)
 
 # === 用户资料模型 ===
 class UserProfile(models.Model):
@@ -56,7 +65,7 @@ class UserProfile(models.Model):
     - 包含性别、头像、生日、简介等非核心字段
     """
     user = models.OneToOneField(
-        AUTH_USER_MODEL,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="profile",
         help_text="关联的主用户"
@@ -82,7 +91,7 @@ class UserLoginRecord(models.Model):
     - 用于追踪用户 登录历史/IP/设备信息
     """
     user = models.ForeignKey(
-        AUTH_USER_MODEL,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="login_records",
         help_text="关联的用户"

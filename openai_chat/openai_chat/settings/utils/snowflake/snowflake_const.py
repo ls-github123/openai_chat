@@ -1,26 +1,22 @@
 """
-Snowflake 全局常量配置模块
-- Redis 键结构
-- TTL 配置
-- 雪花ID位宽配置
-- 自定义 epoch 时间戳
+Snowflake 全局常量配置模块(纯持久绑定模型)
+- 采用 bind + used 永久键模型
+- 不使用 TTL 租约，不需要守护线程续约
+- Redis 仅用于持久化节点绑定关系（db=REDIS_DB_SNOWFLAKE）
 """
-from openai_chat.settings.base import REDIS_DB_SNOWFLAKE
+from __future__ import annotations
+from django.conf import settings
 
 # Redis DB 配置
-SNOWFLAKE_REDIS_DB = REDIS_DB_SNOWFLAKE # Redis 数据库编号(db=15), 用于存储 snowflake 节点注册信息
+SNOWFLAKE_REDIS_DB: int = int(getattr(settings, "REDIS_DB_SNOWFLAKE", 15)) # Redis 数据库编号(db=15), 用于存储 snowflake 节点注册信息
 
 # 系统初始化全局锁配置
 SYSTEM_INIT_LOCK_KEY = "system:init:lock" # Redis锁键
 SYSTEM_INIT_LOCK_EXPIRE = 10 # 锁过期时间(单位:秒)
 
 # Redis 键前缀
-SNOWFLAKE_NODE_KEY_PREFIX = "snowflake:nodes" # 节点注册键前缀
 SNOWFLAKE_BIND_KEY_PREFIX = "snowflake:nodes:bind" # 绑定唯一标识的键前缀
-
-# 注册键设置
-SNOWFLAKE_REGISTER_TTL_SECONDS = 3600 # 注册键有效期(单位:秒)
-SNOWFLAKE_RENEW_INTERVAL_SECONDS = 300 # 守护线程续约间隔(单位:秒)
+SNOWFLAKE_USED_KEY_PREFIX = "snowflake:nodes:used" # 永久占用键前缀
 
 # 雪花算法配置
 SNOWFLAKE_EPOCH = 1704067200000 # 自定义 epoch 时间戳(毫秒) 默认:2024-01-01 00:00:00

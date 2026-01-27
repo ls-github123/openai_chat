@@ -117,11 +117,21 @@ def build_logging():
                 'level': 'INFO', # 级别过滤(低于该级别的日志将被排除)
                 'propagate': True, # 是否向父 logger 传播日志
             },
-           'openai_chat': { # 主业务日志
+            'system.apps': {
+                'handlers': ['file_django'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+                'level': 'INFO',
+                'propagate': False,
+            },
+            'system.init': {
+                'handlers': ['file_django'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
+                'level': 'INFO',
+                'propagate': False,
+            },
+            'openai_chat': { # 主业务日志
                 'handlers': logger_handlers,
                 'level': 'DEBUG',
                 'propagate': False,
-           },
+            },
            'openai_chat.settings.config': { # 配置模块日志
                 'handlers': ['file_project_config'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
                 'level': 'INFO',
@@ -227,9 +237,9 @@ def build_logging():
                'level': 'DEBUG',
                'propagate': False,
             },
-        #    'tasks': {
-        #        'handlers': []
-        #     },
+        #   'tasks': {
+        #       'handlers': []
+        #   },
            'email_resend_client': { # Resend 邮件服务API封装 日志
                'handlers': ['file_email'],
                'level': 'INFO',

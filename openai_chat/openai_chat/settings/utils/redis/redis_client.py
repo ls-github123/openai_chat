@@ -1,60 +1,84 @@
 """
 Redis 客户端连接池模块封装
-- 支持多数据库分离
-- 提供连接池复用机制
-- 默认返回 db=0 连接池实例
-- 高性能连接池管理, 避免重复创建
+- 支持多 DB 连接池复用
+- 导入阶段零 I/O(不创建连接池)
+- 运行期按需懒加载
+- 配置统一从 django.conf.settings 读取
 """
-
-from redis import Redis, ConnectionPool # 导入Redis和连接池类
-from openai_chat.settings.base import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD # 导入Redis配置
-from openai_chat.settings.utils.logging import get_logger # 导入日志记录器
+from __future__ import annotations
+from typing import Dict, Optional
+from redis import Redis, ConnectionPool
+from django.conf import settings
+from openai_chat.settings.utils.logging import get_logger
 
 logger = get_logger("project.redis_config")
 
-# === Redis连接池缓存 ===
-# 不同db使用不同连接池,按需初始化
-_REDIS_POOLS: dict[int, ConnectionPool] = {} # 存储连接池实例的字典
+# 不同 DB 使用不同连接池(进程内缓存)
+_REDIS_POOLS: Dict[int, ConnectionPool] = {}
+
+def _get_redis_config() -> dict:
+    """
+    统一读取 Redis 配置
+    """
+    host = getattr(settings, "REDIS_HOST", "127.0.0.1")
+    port = int(getattr(settings, "REDIS_PORT", 6379))
+    password = getattr(settings, "REDIS_PASSWORD", None)
+    
+    max_connections = int(getattr(settings, "REDIS_MAX_CONNECTIONS", 50))
+    socket_connect_timeout = int(getattr(settings, "REDIS_SOCKET_CONNECT_TIMEOUT", 5))
+    decode_responses = bool(getattr(settings, "REDIS_DECODE_RESPONSES", False))
+    
+    return {
+        "host": host,
+        "port": port,
+        "password": password,
+        "max_connections": max_connections,
+        "socket_connect_timeout": socket_connect_timeout,
+        "decode_responses": decode_responses,
+    }
 
 def get_redis_pool(db: int = 0) -> ConnectionPool:
     """
-    获取指定 Redis 数据库连接池实例(支持连接池复用)
-    :param db: Redis数据库编号(0-15/默认0)
-    :return: Redis ConnectionPool 实例
+    获取指定 Redis DB 的连接池（懒加载 + 复用）
+    - 导入阶段不会触发任何网络 I/O
     """
-    if db not in _REDIS_POOLS: # 如果连接池不存在
-        try:
-            _REDIS_POOLS[db] = ConnectionPool(
-                host=REDIS_HOST,
-                port=int(REDIS_PORT),
-                password=REDIS_PASSWORD,
-                db=db,
-                decode_responses=True, # 自动解码字符串
-                max_connections=50, # 最大连接数
-                socket_connect_timeout=5, # 连接超时时间
-            )
-            logger.info(f"[redis_client] Redis连接池初始化成功(db={db})")
-        except Exception as e:
-            logger.critical(f"[redis_client] Redis连接池初始化失败(db={db}): {e}")
-            raise
-    return _REDIS_POOLS[db] # 返回连接池实例
-
-def get_redis_client(db: int = 0) -> Redis:
-    """
-    获取 Redis 客户端实例(使用对应连接池)
-    :param db: Redis数据库编号(0-15/默认0)
-    :return: Redis 客户端实例
-    """
-    try:
-        pool = get_redis_pool(db) # 获取连接池
-        client = Redis(connection_pool=pool) # 创建Redis客户端
-        client.ping() # 测试连接可用性
-        logger.debug(f"[redis_client] Redis客户端连接成功(db={db})")
-        return client
-    except Exception as e:
-        logger.critical(f"[redis_client] Redis客户端连接失败(db={db}): {e}")
-        raise # 连接失败抛出异常
+    if db in _REDIS_POOLS:
+        return _REDIS_POOLS[db]
     
-# 默认 Redis 客户端实例(db=0)
-REDIS_POOL = get_redis_pool(db=0) # 默认连接池实例
-REDIS_CLIENT = get_redis_client(db=0) # 默认Redis客户端实例
+    cfg = _get_redis_config()
+    
+    try:
+        pool = ConnectionPool(
+            host=cfg["host"],
+            port=cfg["port"],
+            password=cfg["password"],
+            db=db,
+            decode_responses=cfg["decode_responses"],
+            max_connections=cfg["max_connections"],
+            socket_connect_timeout=cfg["socket_connect_timeout"],
+        )
+        _REDIS_POOLS[db] = pool
+        logger.info(f"[redis_client] Redis连接池已创建(db={db})")
+        return pool
+    except Exception:
+        logger.exception(f"[redis_client] Redis连接池创建失败(db={db})")
+        raise
+    
+def get_redis_client(db: int = 0, *, health_check: bool = False) -> Redis:
+    """
+    获取 Redis 客户端(使用连接池)
+    - 默认不 ping, 避免高频 I/O
+    - health_check=True 时发起 ping(诊断/启动探针)
+    """
+    pool = get_redis_pool(db=db)
+    client = Redis(connection_pool=pool)
+    
+    if health_check:
+        try:
+            client.ping()
+            logger.debug(f"[redis_client] Redis ping 成功(db={db})")
+        except Exception:
+            logger.exception(f"[redis_client] Redis ping 失败(db={db})")
+            raise
+    
+    return client
