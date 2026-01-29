@@ -7,11 +7,13 @@
 - 日志配置统一
 """
 import json
+from pathlib import Path # 导入路径处理工具
+from openai_chat.settings.utils.logging import build_logging # 日志构建器
 from openai_chat.settings.utils import path_utils # 导入路径工具模块
 from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
-from pymongo import MongoClient # MongoDB客户端
+# from pymongo import MongoClient # MongoDB客户端
 from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mysql数据库连接池
-from . import LOGGING # 导入日志配置
+
 
 # 基础目录
 BASE_DIR = path_utils.BASE_DIR # 项目根路径
@@ -267,23 +269,23 @@ CELERY_TASK_RESULT_EXPIRES = 3600 # 1小时
 
 
 # === MongoDB配置 ===
-MONGO_DB_NAME = get_config('MONGO_DB_NAME', default='openai_chat_db')
-MONGO_USER = get_config('MONGO_USER', default='root') # MongoDB用户名
-MONGO_HOST = get_config('MONGO_HOST', default='localhost') # MongoDB主机地址
-MONGO_PORT = get_config('MONGO_PORT', default='27017') # MongoDB主机端口号
-MONGO_PASSWORD = SecretConfig.MONGO_PASSWORD # MongoDB密码
+# MONGO_DB_NAME = get_config('MONGO_DB_NAME', default='openai_chat_db')
+# MONGO_USER = get_config('MONGO_USER', default='root') # MongoDB用户名
+# MONGO_HOST = get_config('MONGO_HOST', default='localhost') # MongoDB主机地址
+# MONGO_PORT = get_config('MONGO_PORT', default='27017') # MongoDB主机端口号
+# MONGO_PASSWORD = SecretConfig.MONGO_PASSWORD # MongoDB密码
 
-MONGO_CONFIG = { # retryWrites=false 单机部署关闭写操作自动重试
-    'URI': f'mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}?authSource={MONGO_DB_NAME}&retryWrites=false', # MongoDB连接地址
-}
+# MONGO_CONFIG = { # retryWrites=false 单机部署关闭写操作自动重试
+#     'URI': f'mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}?authSource={MONGO_DB_NAME}&retryWrites=false', # MongoDB连接地址
+# }
 
-mongo_client = MongoClient(
-    MONGO_CONFIG['URI'],
-    maxPoolSize=20, # 最大连接数
-    minPoolSize=5, # 最小连接数
-    serverSelectionTimeoutMS=2000, # 服务器选择超时时间
-)
-mongo_db = mongo_client.get_database(MONGO_DB_NAME) # type: ignore # 获取MongoDB数据库实例
+# mongo_client = MongoClient(
+#     MONGO_CONFIG['URI'],
+#     maxPoolSize=20, # 最大连接数
+#     minPoolSize=5, # 最小连接数
+#     serverSelectionTimeoutMS=2000, # 服务器选择超时时间
+# )
+# mongo_db = mongo_client.get_database(MONGO_DB_NAME) # type: ignore # 获取MongoDB数据库实例
 
 # === Cloudflare Turnstile 人机验证模块配置 ===
 TURNSTILE_ADMIN_SECRET_KEY = SecretConfig.TURNSTILE_ADMIN_SECRET_KEY # admin管理模块后端密钥
@@ -337,3 +339,60 @@ USE_TZ = True # 使用Django时区支持
 
 # 机器唯一ID
 MACHINE_UNIQUE_ID = get_config("MACHINE_UNIQUE_ID", default=None) # 机器唯一标识,用于分布式ID生成
+
+# === 日志处理器配置 ===
+
+LOGGING_CONF = {
+    # 日志目录
+    "LOG_DIR": Path(BASE_DIR / "logs").resolve(),
+    
+    # base.py 安全默认
+    "ENABLE_CONSOLE": False, # 默认不启用控制台输出
+    "PREFER_JSON": True, # 默认启用JSON格式日志
+    
+    # 文件滚动策略
+    "MAX_BYTES": 10 * 1024 * 1024, # 单个日志文件最大10MB
+    "BACKUP_COUNT": 5, # 保留最近5个滚动日志文件
+    
+    # root 默认级别
+    "ROOT_LEVEL": "INFO",
+    
+    # 各模块默认级别
+    "LEVELS": {
+        "django": "INFO",
+        "users": "DEBUG",
+        "project": "INFO",
+        "project.redlock": "DEBUG",
+        "mysql_client": "INFO",
+        "project.redis": "INFO",
+        "project.mongo": "INFO",
+        "azure_key_vault_client": "WARNING",
+        "celery": "INFO",
+        "email_resend_client": "INFO",
+        "system.apps": "INFO",
+        "system.init": "INFO",
+        "openai_chat.settings.config": "INFO",
+    },
+    # 关键: logger -> 文件名映射(未映射则使用 root 配置)
+    "FILES": {
+        # 系统初始化/护栏
+        "system.apps": "django.log",
+        "system.init": "django.log",
+        
+        # celery
+        "celery": "celery.log",
+        
+        "django": "django.log",
+        "users": "users.log",
+        "project.redlock": "lock.log",
+        "project.lock_factory": "lock.log",
+        "project.redis_lock": "lock.log",
+        "project.redis": "db_redis.log",
+        "project.mongo": "db_mongo.log",
+        "mysql_client": "db_mysql.log",
+        "email_resend_client": "email.log",
+    },
+}
+
+# 构建 LOGGING dict
+LOGGING = build_logging(LOGGING_CONF)

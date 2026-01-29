@@ -37,7 +37,7 @@ def get_secret_by_env(env_key: str, default_key: str, vault_client:AzureKeyVault
     try:
         return vault_client.get_secret(secret_name) # 从 Azure Key Vault 中获取密钥值
     except Exception as e:
-        logger.error(f"[Vault]获取密钥失败:{secret_name}", exc_info=True)
+        logger.error(f"[Vault]获取密钥失败:{secret_name}, err={e}", exc_info=True)
         raise RuntimeError(f"[Vault]获取密钥失败:{secret_name}") from e
 
 # === Azure Key Vault 客户端初始化 ===

@@ -1,292 +1,223 @@
 """
-日志模块封装：构建多级别日志系统，支持控制台输出、文件输出、多模块分级管理
-支持：并发安全、滚动日志、多数据库/业务/锁模块分离、自定义格式器、开发/生产环境切换
+Django logging 配置构建器
+- 纯函数：build_logging(conf) -> dict（不读环境变量、不 print）
+- 严格 root 策略: root/file_project 以 ROOT_LEVEL 过滤(默认 INFO)
+
+支持:
+- ConcurrentRotatingFileHandler（多进程安全写入）
+- 文件滚动策略（MAX_BYTES / BACKUP_COUNT）
+- 控制台输出（ENABLE_CONSOLE）
+- JSON / 文本格式（PREFER_JSON）
+- logger -> 文件映射（FILES，同文件复用同 handler）
+- logger -> level 映射（LEVELS）
+- root 兜底（project.log）
 """
-import os, logging
-from openai_chat.settings.utils.path_utils import BASE_DIR
-from concurrent_log_handler import ConcurrentRotatingFileHandler # 并发日志处理模块-多进程安全写入日志
+from __future__ import annotations
+import logging
+from pathlib import Path
+from typing import Any, Dict, Mapping, Optional, Tuple
 
-# 日志目录路径
-LOG_DIR = (BASE_DIR / 'logs').resolve() # 确保路径为绝对路径
-LOG_DIR.mkdir(parents=True, exist_ok=True) # 创建日志目录(如果不存在)
+# 模块级缓存: 解决 Pylance 对 function attribute 的报错
+_LOGGING_CACHE: Optional[Tuple[Tuple[Any, ...], Dict[str, Any]]] = None
 
-# === 环境判定与格式器策略 ===
-DJANGO_SETTINGS_MODULE = os.getenv('DJANGO_SETTINGS_MODULE', 'openai_chat.settings.dev') # 获取当前环境变量
-IS_DEV = "dev" in DJANGO_SETTINGS_MODULE.lower() # 判断是否为开发环境
-# 开发环境使用详细化格式器, 生产环境使用 JSON 格式器
-FORMATTER_STYLE = 'verbose' if IS_DEV else 'json'
-ENABLE_CONSOLE_LOGGING = IS_DEV # 开发环境下启用控制台日志
+def _file_handler(
+    *,
+    filename: str,
+    level: str,
+    formatter: str,
+    max_bytes: int,
+    backup_count: int,
+) -> Dict[str, Any]:
+    return {
+        # 多进程安全文件滚动处理器
+        "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
+        "filename": filename, # 日志文件路径
+        "maxBytes": max_bytes, # 最大文件大小
+        "backupCount": backup_count, # 备份文件数量
+        "encoding": "utf-8", # 文件编码
+        "level": level, # 日志级别
+        "formatter": formatter, # 格式化器
+    }
 
-def build_logging():
+def _sanitize_handler_name(file_name: str) -> str:
+    # 将文件名转换为合法的 handler 名称
+    s = file_name.lower().replace(".", "_").replace("-", "_").replace(" ", "_")
+    return "".join(ch for ch in s if ch.isalnum() or ch == "_")
+
+def _conf_fingerprint(conf: Mapping[str, Any]) -> Tuple[Any, ...]:
     """
-    返回符合 Django Logging 配置规范的字典结构
-    (日志处理器-handlers、日志格式化器-formatters、日志生成器-loggers)
-    - 日志配置说明:
-    - 控制台输出(仅开发环境)
-    - 文件输出(general/info/error/critical/django)
-    - 各类日志按级别分类持久化
-    - 日志分级(从低到高依次向下):
-    - -(DEBUG-故障排查低级别系统信息)
-    - -(INFO-一般系统信息)
-    - -(WARNING-系统小问题信息)
-    - -(ERROR-系统较大错误问题信息)
-    - -(CRITICAL-系统致命错误问题信息)
+    生成稳定指纹,用于缓存
+    - 只取关键字段，避免 Path/对象导致不可 hash
     """
-    # 检查缓存是否存在
-    if hasattr(build_logging, "_cache"):
-        return build_logging._cache # type: ignore
+    log_dir = str(Path(conf.get("LOG_DIR", Path.cwd() / "logs")).resolve())
+    enable_console = bool(conf.get("ENABLE_CONSOLE", False))
+    prefer_json = bool(conf.get("PREFER_JSON", False))
+    max_bytes = int(conf.get("MAX_BYTES", 10 * 1024 * 1024))
+    backup_count = int(conf.get("BACKUP_COUNT", 5))
+    root_level = str(conf.get("ROOT_LEVEL", "INFO")).upper()
+    
+    levels = tuple(
+        sorted((str(k), str(v).upper()) for k, v in (conf.get("LEVELS") or {}).items())
+    )
+    files = tuple(
+        sorted((str(k), str(v)) for k, v in (conf.get("FILES") or {}).items())
+    )
+    
+    return (
+        log_dir,
+        enable_console,
+        prefer_json,
+        max_bytes,
+        backup_count,
+        root_level,
+        levels,
+        files
+    )
 
-    # 文件日志处理器生成函数
-    def file_handler(name, level):
-        return {
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler', # 支持自动轮转的文件日志处理器
-            'filename': os.path.join(LOG_DIR, f'{name}.log'), # 输出文件路径
-            'maxBytes': 5 * 1024 * 1024, # 单个日志文件最大容量
-            'backupCount': 3, # 最多保留3个轮转文件
-            'formatter': FORMATTER_STYLE, # 格式化器选择
-            'level': level, # 日志级别
-            'encoding': 'utf-8', # 文件编码
-        }
+
+
+def build_logging(conf: Mapping[str, Any]) -> Dict[str, Any]:
+    """ 
+    构建 Django LOGGING dictConfig 配置
     
-    # === 日志处理器 ===
-    # 将日志输出到指定位置
-    handlers = {
-        'file_project': file_handler('project', 'DEBUG'), # 项目通用日志
-        'file_project_config': file_handler('project_config', 'INFO'), # 项目配置 日志
-        'file_azure_key_vault': file_handler('azure_key_vault', 'WARNING'), # Azure Key Vault 日志
-        'file_db_mysql': file_handler('db_mysql', 'INFO'), # Mysql数据库 日志
-        'file_db_redis': file_handler('db_redis', 'INFO'), # Redis缓存数据库 日志
-        'file_db_mongo': file_handler('db_mongo', 'INFO'), # MongoDB数据库 日志
-        'file_lock': file_handler('lock', 'DEBUG'), # Redis锁 日志
-        'file_django': file_handler('django', 'INFO'), # Django框架本体 日志
-        'file_snowflake': file_handler('snowflake', 'DEBUG'), # snowflake分布式ID生成 日志
-        'file_api': file_handler('api', 'WARNING'), # API模块 日志
-        'file_users': file_handler('users', 'DEBUG'), # 用户模块 日志
-        'file_chat': file_handler('chat', 'WARNING'), # chat聊天模块 日志
-        'file_celery': file_handler('celery', "INFO"), # Celery 任务队列 日志
-        'file_email': file_handler('email', 'INFO'), # Resend 邮件发送服务API模块 日志
-	}
+    参数字段:
+      - LOG_DIR: Path|str
+      - ENABLE_CONSOLE: bool
+      - PREFER_JSON: bool
+      - MAX_BYTES: int
+      - BACKUP_COUNT: int
+      - ROOT_LEVEL: str
+      - LEVELS: dict[str, str]
+      - FILES: dict[str, str]   # logger_name -> file_name（可多个 logger 指向同一文件）
+    """
+    global _LOGGING_CACHE
     
-    # 控制台输出处理器(仅开发环境启用)
-    if ENABLE_CONSOLE_LOGGING:
-        print("[Logger]开启开发环境控制台日志输出")
-        handlers['console'] = {
-            # StreamHandler-python标准日志库内置处理器,用于开发调试阶段
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple', # 输出简单格式
-            'level': 'DEBUG',
-		}
-    # fallback logger 收集所有输出器
-    logger_handlers = list(handlers.keys())
+    key = _conf_fingerprint(conf)
+    if _LOGGING_CACHE and _LOGGING_CACHE[0] == key:
+        return _LOGGING_CACHE[1]
     
-    # === 日志返回结构体配置 ===
-    config = {
-        'version': 1,
-        'disable_existing_loggers': False,  # 保留已有模块日志
-        
-        # === 日志格式化器 ===
-        # verbose 文本格式、simple 简单文本格式、json JSON格式
-        'formatters': {
-            'verbose': { # 详细格式: 时间、级别、模块名、日志内容
-                'format': '[{asctime}] [{levelname}] [{name}] {message}',
-                'style': '{', # 格式化标记
-            },
-            'simple': { # 简单格式: 只显示日志等级和内容,主要用于控制台输出
-                'format': '{levelname}: {message}',
-                'style': '{',
-            },
-            'json': { # JSON格式: 适用于生产环境,便于日志分析
-                # 使用 jsonlogger 库格式化日志为 JSON
-                '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
-                'format': '%(asctime)s %(levelname)s %(name)s %(process)d %(threadName)s %(message)s',
-                'rename_fields': { # 重命名字段以符合 JSON 格式
-                    'levelname': 'level',
-                    'asctime': 'timestamp',
-                    'name': 'logger',
-                },
-            },
+    log_dir = Path(conf.get("LOG_DIR", Path.cwd() / "logs")).resolve()
+    enable_console = bool(conf.get("ENABLE_CONSOLE", False)) # 是否启用控制台输出
+    prefer_json = bool(conf.get("PREFER_JSON", False))
+    max_bytes = int(conf.get("MAX_BYTES", 10 * 1024 *1024))
+    backup_count = int(conf.get("BACKUP_COUNT", 5))
+    root_level = str(conf.get("ROOT_LEVEL", "INFO")).upper()
+    
+    levels: Dict[str, str] = {
+        str(k): str(v).upper()
+        for k, v in (conf.get("LEVELS") or {}).items()
+    }
+    files: Dict[str, str] = {
+        str(k): str(v)
+        for k, v in (conf.get("FILES") or {}).items()
+    }
+    
+    # 目录存在性检查
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 默认格式化器配置
+    default_formatter = "json" if prefer_json else "verbose"
+    
+    # 格式化器配置
+    formatters: Dict[str, Any] = {
+        "verbose": { # 详细格式化器
+            "format": "[{asctime}] [{levelname}] [{name}] {message}", # 详细格式
+            "style": "{",
         },
-        # 日志处理器集合(输出位置 -> 格式化器选择)
-        'handlers': handlers,
-        
-        # 各模块日志记录器配置(按模块分配日志处理器)
-        'loggers': {
-            'django': { # # Django框架日志
-                # 控制台和错误日志处理器
-                'handlers': ['file_django'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-                'level': 'INFO', # 级别过滤(低于该级别的日志将被排除)
-                'propagate': True, # 是否向父 logger 传播日志
-            },
-            'system.apps': {
-                'handlers': ['file_django'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-                'level': 'INFO',
-                'propagate': False,
-            },
-            'system.init': {
-                'handlers': ['file_django'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-                'level': 'INFO',
-                'propagate': False,
-            },
-            'openai_chat': { # 主业务日志
-                'handlers': logger_handlers,
-                'level': 'DEBUG',
-                'propagate': False,
-            },
-           'openai_chat.settings.config': { # 配置模块日志
-                'handlers': ['file_project_config'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-                'level': 'INFO',
-                'propagate': False,
-            },
-           'openai_chat.users': { # 用户模块日志(注册、登录等操作)
-               'handlers': ['file_users'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'DEBUG',
-               'propagate': False,
-		   },
-           'jwt': { # JWT 模块日志(签名/验证等)
-               'handlers': ['file_users'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'DEBUG',
-               'propagate': False,
-           },
-           'openai_chat.settings.azure_key_vault_client': { # Azure key vault 模块日志
-               'handlers': ['file_azure_key_vault'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'WARNING',
-               'propagate': False,
-		   },
-           'openai_chat.chat': { # chat聊天模块日志
-               'handlers': ['file_chat'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'WARNING',
-               'propagate': False,
-           },
-           'openai.api': { # OPENAI-API模块日志
-               'handlers': ['file_api'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'DEBUG',
-               'propagate': False,
-           },
-           'project.api': { # 项目API模块日志
-               'handlers': ['file_api'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'project.redis': { # Djano-Redis缓存后端 日志
-               'handlers': ['file_db_redis'],
-               'level': 'WARNING',
-               'propagate': False,
-            },
-           'project.redlock': { # Redlock分布式锁 日志
-               'handlers': ['file_lock'],
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'project.lock_factory': { # 锁工厂函数接口模块 日志
-               'handlers': ['file_lock'],
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'project.redis_lock': { # Redis单节点锁 日志
-               'handlers': ['file_lock'],
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'idempotency': { # 接口幂等性模块 日志
-               'handlers': ['file_lock'],
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'project.redis_config': { # Redis客户端、连接池、连接状态 日志
-               'handlers': ['file_db_redis'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'project.snowflake.register': { # Snowflake分布式节点ID注册 日志
-               'handlers': ['file_snowflake'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'project.snowflake.guard': { # Snowflake分布式节点续约 日志
-               'handlers': ['file_snowflake'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'project.mongo': { # MongoDB数据模块日志
-               'handlers': ['file_db_mongo'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'pymongo': { # MongoDB ORM 日志
-               'handlers': ['file_db_mongo'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'mysql_client': { # Mysql数据库业务日志(连接失败、事务异常等)
-               'handlers': ['file_db_mysql'] + (['console'] if ENABLE_CONSOLE_LOGGING else []),
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'mysql_orm': { # Mysql ORM 日志
-                'handlers': ['file_db_mysql'],
-                'level': 'INFO',
-                'propagate': False,
-            },
-           'users': { # 用户模块日志(注册、登录等操作)
-               'handlers': ['file_users'],
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-           'users.totp': { # 用户模块-TOTP验证 日志
-               'handlers': ['file_users'],
-               'level': 'DEBUG',
-               'propagate': False,
-            },
-        #   'tasks': {
-        #       'handlers': []
-        #   },
-           'email_resend_client': { # Resend 邮件服务API封装 日志
-               'handlers': ['file_email'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'celery': {
-               # celery 主日志
-               'handlers': ['file_celery'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'celery.worker': {
-               # celery worker模块日志
-               'handlers': ['file_celery'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'celery.tasks': {
-               # celery task模块日志
-               'handlers': ['file_celery'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           'task_email': { # Celery 任务队列异步发送邮件 日志
-               'handlers': ['file_email'],
-               'level': 'INFO',
-               'propagate': False,
-            },
-           '': { # fallback 根 logger(通用日志)
-                'handlers': ['file_project'],
-                'level': 'INFO',
-                'propagate': False,
-           },
+        "simple": { # 简单格式化器
+            "format": "{levelname}: {message}",
+            "style": "{",
+        },
+        "json": { # JSON 格式化器
+            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s %(process)d %(threadName)s %(message)s",
         },
     }
-    # 缓存写入(避免重复初始化)
-    build_logging._cache = config  # type: ignore
+    
+    # handler: root 兜底文件 + 动态文件 handler + 可选 console
+    handlers: Dict[str, Any] = {}
+    
+    # 根日志文件 handler (严格 root 策略)
+    handlers["file_project"] = _file_handler(
+        filename=str(log_dir / "project.log"),
+        level=root_level, # 根日志级别
+        formatter=default_formatter,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+    
+    if enable_console: # 可选控制台 handler
+        handlers["console"] = {
+            "class": "logging.StreamHandler",
+            "level": "DEBUG",
+            "formatter": "simple",
+        }
+    
+    # 为 FILES 中出现的“文件名”去重创建 handler（同文件复用）
+    # file_name -> handler_name
+    file_to_handler: Dict[str, str] = {}
+    for file_name in sorted(set(files.values())):
+        safe = _sanitize_handler_name(file_name)
+        handler_name = f"file_{safe}"
+        file_to_handler[file_name] = handler_name
+        handlers[handler_name] = _file_handler(
+            filename=str(log_dir / file_name),
+            level="NOTSET", # level=NOTSET，由 logger.level 负责过滤
+            formatter=default_formatter,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+        )
+    
+    def _handlers_for_logger(logger_name: str) -> list[str]:
+        hs: list[str] = []
+        
+        mapped = files.get(logger_name)
+        # 如果该 logger 映射到某文件, 挂载对应 file handler
+        if mapped and mapped in file_to_handler:
+            hs.append(file_to_handler[mapped])
+        else:
+            # 没有映射则直接走 root file_project
+            hs.append("file_project")
+        if enable_console:
+            hs.append("console")
+        
+        return hs
+    
+    # 关键修复：用 LEVELS ∪ FILES 的并集生成 loggers，确保 FILES 映射一定生效
+    logger_names = set(levels.keys()) | set(files.keys())
+    # loggers: 为 LEVELS 的 logger 建立配置: handlers 由 files 决定
+    loggers: Dict[str, Any] = {}
+    
+    for logger_name in sorted(logger_names):
+        level = levels.get(logger_name, root_level)
+        loggers[logger_name] = {
+            "handlers": _handlers_for_logger(logger_name),
+            "level": level,
+            "propagate": False,
+        }
+    
+    root_handlers: list[str] = ["file_project"]
+    if enable_console:
+        root_handlers.append("console")
+    # 关键 -> root logger 兜底(处理未显式声明的logger)
+    config: Dict[str, Any] = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": formatters,
+        "handlers": handlers,
+        "root": {
+            "handlers": root_handlers,
+            "level": root_level,
+        },
+        "loggers": loggers,
+    }
+    
+    _LOGGING_CACHE = (key, config)
     return config
 
-# === 通用日志获取函数 ===
 def get_logger(name: str) -> logging.Logger:
     """
-    获取指定名称的日志记录器(loggers)
-    示例: mysql_logger = get_logger("project.mysql")
-    注:若未注册则使用 fallback 配置
+    获取 logger(不注入 handler)
+    - 若项目未配置 dictConfig，Django 会走 root/basicConfig
     """
-    logger = logging.getLogger(name) # 获取指定名称的日志记录器
-    if not logger.handlers: # 如果没有处理器,则使用默认处理器
-        logger.handlers = logging.getLogger('').handlers
-    return logger
+    return logging.getLogger(name)
