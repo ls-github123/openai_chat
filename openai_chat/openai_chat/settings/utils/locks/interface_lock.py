@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod # 锁接口基类
 from typing import ContextManager # 上下文管理器类型提示
 from openai_chat.settings.utils.logging import get_logger # 日志记录器
 
-logger = get_logger("project.redlock") 
+logger = get_logger("project.lock") 
 
 class BaseLock(ABC):
     """

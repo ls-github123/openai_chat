@@ -4,7 +4,7 @@ from typing import Optional, Callable, Awaitable, TypeVar, cast, Any
 from functools import wraps # python标准库装饰器工具
 from django.http import JsonResponse, HttpRequest, HttpResponse
 
-logger = get_logger("project.api")
+logger = get_logger("clients")
 
 # 泛型类型变量，用于装饰器类型注解
 F = TypeVar("F", bound=Callable[..., Awaitable[HttpResponse]])

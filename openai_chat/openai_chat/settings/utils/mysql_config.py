@@ -11,7 +11,7 @@ from openai_chat.settings.config import get_config
 from openai_chat.settings.config import SecretConfig # 导入(Azure key vault)密钥获取接口
 from openai_chat.settings.utils.logging import get_logger # 导入日志记录器
 
-logger = get_logger("mysql_client")
+logger = get_logger("project.mysql")
 
 def get_mysql_config(alias: str = 'default') -> dict:
     """

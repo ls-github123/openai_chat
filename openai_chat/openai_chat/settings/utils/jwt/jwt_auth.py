@@ -54,7 +54,7 @@ from users.services.auth.state_guards import UserStateGuard
 # - Redis 缺失即拒绝
 # - 不回源 DB
 
-logger = get_logger("jwt")
+logger = get_logger("project.jwt")
 
 @dataclass
 class AuthenticatedUser:

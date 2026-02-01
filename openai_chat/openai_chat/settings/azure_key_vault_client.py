@@ -7,7 +7,7 @@ from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.core.exceptions import ResourceNotFoundError, HttpResponseError # 导入异常处理类
 
-logger = get_logger("openai_chat.settings.azure_key_vault_client")
+logger = get_logger("clients.azure_vault_key")
 
 class AzureKeyVaultClient:
     def __init__(self, vault_url: str):

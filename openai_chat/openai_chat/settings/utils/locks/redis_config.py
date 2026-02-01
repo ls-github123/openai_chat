@@ -9,7 +9,7 @@ from typing import Optional, Any
 from django.conf import settings
 from openai_chat.settings.utils.logging import get_logger # 导入日志处理器模块封装
 
-logger = get_logger("project.redis_config") # 日志记录器
+logger = get_logger("project.redlock") # 日志记录器
 
 # 进程内单例缓存(非分布式唯一)
 # 多进程部署时, 每进程均保留自己的缓存

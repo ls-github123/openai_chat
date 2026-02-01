@@ -23,7 +23,7 @@ from .jwt_blacklist import is_blacklisted # JWT黑名单校验
 DJANGO_SETTINGS_MODULE = os.getenv('DJANGO_SETTINGS_MODULE', 'openai_chat.settings.dev') # 获取当前环境变量
 IS_DEV = "dev" in DJANGO_SETTINGS_MODULE.lower() # 判断是否为开发环境
 
-logger = get_logger("jwt")
+logger = get_logger("project.jwt")
 
 class JWTValidationError(Exception):
     """JWT 验证失败统一异常"""

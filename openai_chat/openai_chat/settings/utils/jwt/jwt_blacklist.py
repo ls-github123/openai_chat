@@ -5,7 +5,7 @@ from openai_chat.settings.utils.redis import get_redis_client
 from openai_chat.settings.base import REDIS_DB_JWT_BLACKLIST # JWT黑名单模块Redis存储占用库
 from openai_chat.settings.utils.logging import get_logger
 
-logger = get_logger("jwt")
+logger = get_logger("project.jwt")
 
 # Redis key 前缀
 BLACKLIST_PREFIX = "jwt:blacklist"

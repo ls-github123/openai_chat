@@ -19,7 +19,7 @@ from openai_chat.settings.utils.redis import get_redis_client # 获取redis客�
 from openai_chat.settings.base import REDIS_DB_IDEMPOTENCY # 幂等性专用 Redis DB
 from openai_chat.settings.utils.logging import get_logger
 
-logger = get_logger("idempotency")
+logger = get_logger("project.redis")
 
 class IdempotencyInProgressError(Exception):
     """同一幂等 key 的请求正在处理中"""
@@ -121,12 +121,12 @@ end
               args=[json.dumps(pending_payload, ensure_ascii=False), str(ttl_seconds)],
             )
         except Exception as e:
-            logger.exception("Idempotency begin failed (redis error). scope=%s key=%s", scope, idem_key)
+            logger.exception("[IdempotencyExecutor]Idempotency begin failed (redis error). scope=%s key=%s", scope, idem_key)
             raise
         
         # ---显式校验 Lua 返回结构, 消除 IDE/类型检查报红, 保障运行安全---
         if not isinstance(ret, (list, tuple)) or len(ret) < 2:
-            logger.error("Unexpected lua return. scope=%s key=%s ret=%r", scope, idem_key, ret)
+            logger.error("[IdempotencyExecutor]Unexpected lua return. scope=%s key=%s ret=%r", scope, idem_key, ret)
             raise IdempotencyKeyConflictError("invalid idempotency lua return")
         
         raw_action, raw_cached = ret[0], ret[1]

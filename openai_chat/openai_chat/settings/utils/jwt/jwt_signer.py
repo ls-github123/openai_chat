@@ -18,7 +18,7 @@ from openai_chat.settings.utils.locks import build_lock # 分布式锁获取接�
 from openai_chat.settings.base import REDIS_DB_JWT_CACHE # JWT签名Redis 缓存库db编号
 from openai_chat.settings.utils.logging import get_logger # 导入日志记录器接口
 
-logger = get_logger("jwt")
+logger = get_logger("project.jwt.singer")
 
 class AzureRS256Signer:
     """

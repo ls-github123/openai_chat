@@ -359,38 +359,36 @@ LOGGING_CONF = {
     
     # 各模块默认级别
     "LEVELS": {
+        # Django 框架层
         "django": "INFO",
-        "users": "DEBUG",
-        "project": "INFO",
+        "django.request": "ERROR",
+        "django.security": "WARNING",
+        "system": "INFO", # 系统启动 / 初始化
+        "users": "DEBUG", # 用户业务域
+        # 项目内部基础设施
+        "project": "INFO", 
         "project.redlock": "DEBUG",
-        "mysql_client": "INFO",
+        "project.lock": "DEBUG",
+        "project.snowflake": "INFO",
+        "project.jwt": "INFO",
+        "project.jwt.singer": "DEBUG",
+        # Redis 客户端与登录态控制
         "project.redis": "INFO",
-        "project.mongo": "INFO",
-        "azure_key_vault_client": "WARNING",
+        "project.redis.allow": "INFO",
+        # celery异步任务队列
         "celery": "INFO",
-        "email_resend_client": "INFO",
-        "system.apps": "INFO",
-        "system.init": "INFO",
-        "openai_chat.settings.config": "INFO",
+        # 外部服务调用
+        "clients": "WARNING",
+        "clients.resend": "INFO", # 邮件发送接口
     },
     # 关键: logger -> 文件名映射(未映射则使用 root 配置)
     "FILES": {
-        # 系统初始化/护栏
-        "system.apps": "django.log",
-        "system.init": "django.log",
-        
-        # celery
-        "celery": "celery.log",
-        
-        "django": "django.log",
-        "users": "users.log",
-        "project.redlock": "lock.log",
-        "project.lock_factory": "lock.log",
-        "project.redis_lock": "lock.log",
-        "project.redis": "db_redis.log",
-        "project.mongo": "db_mongo.log",
-        "mysql_client": "db_mysql.log",
-        "email_resend_client": "email.log",
+        "system": "system.log", # 系统启动/护栏/初始化(apps ready 启动检查等)
+        "users": "users.log",  # 用户模块(注册/登录/JWT/风控/验证码)
+        "project": "project.log", # redis / locks / jwt / snowflake等
+        "celery": "celery.log", # Celery 异步任务队列
+        "clients": "clients.log", # 外部服务调用 / API / SDK等
+        "django": "django.log", # Django 框架日志
     },
 }
 

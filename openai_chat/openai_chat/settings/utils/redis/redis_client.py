@@ -11,7 +11,7 @@ from redis import Redis, ConnectionPool
 from django.conf import settings
 from openai_chat.settings.utils.logging import get_logger
 
-logger = get_logger("project.redis_config")
+logger = get_logger("project.redis")
 
 # 不同 DB 使用不同连接池(进程内缓存)
 _REDIS_POOLS: Dict[int, ConnectionPool] = {}

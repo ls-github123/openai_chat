@@ -5,7 +5,7 @@ from openai_chat.settings.utils.logging import get_logger # 导入日志处理�
 from .interface_lock import BaseLock # 导入锁接口定义
 from redis import Redis # Redis客户端
 
-logger = get_logger("project.redis_lock")
+logger = get_logger("project.redlock")
 
 class RedisSingleLock(BaseLock):
     """

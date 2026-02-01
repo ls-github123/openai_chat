@@ -21,7 +21,7 @@ import httpx # 同时支持 sync/async 请求
 from django.conf import settings # 运行时读取 RESEND_EMAIL（避免导入 base.py）
 from openai_chat.settings.utils.logging import get_logger
 
-logger = get_logger("email_resend_client")
+logger = get_logger("clients.resend")
 
 # ===错误类型(上层据此决定 retry)===
 class EmailSendError(Exception):

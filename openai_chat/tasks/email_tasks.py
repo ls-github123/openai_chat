@@ -15,7 +15,7 @@ from openai_chat.settings.utils.email.resend_client import (
     EmailSendError, # 其他错误(默认不重试)
 )
 
-logger = get_logger("tasks.email")
+logger = get_logger("celery.tasks_email")
 
 REDIS_DB_MAIL = getattr(settings, "REDIS_DB_MAIL", 11)
 

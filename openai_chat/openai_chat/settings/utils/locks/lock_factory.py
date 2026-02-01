@@ -3,7 +3,7 @@ from __future__ import annotations
 from openai_chat.settings.utils.logging import get_logger
 from .interface_lock import BaseLock # 导入锁接口定义
 
-logger = get_logger("project.lock_factory")
+logger = get_logger("project.lock")
 
 def build_lock(key: str, ttl: int = 10000, strategy: str = "safe") -> BaseLock:
     """

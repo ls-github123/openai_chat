@@ -16,7 +16,7 @@ from .jwt_blacklist import add_to_blacklist # 黑名单机制
 from openai_chat.settings.utils.logging import get_logger # 日志记录器
 from openai_chat.settings.utils.token_helpers import get_scope_for_user # 动态获取用户权限范围
 
-logger = get_logger("jwt")
+logger = get_logger("project.jwt")
 HEADER = {"alg": "RS256", "typ": "JWT"}
 
 class TokenIssuerService:

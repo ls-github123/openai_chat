@@ -7,7 +7,7 @@ from openai_chat.settings.utils.redis import get_redis_client
 from .redis_register import RedisNodeRegister
 from . import snowflake_const
 
-logger = get_logger("project.snowflake.register")
+logger = get_logger("project.snowflake")
 
 # 进程内缓存: 避免每次调用都访问 Redis
 _NODE_IDS_CACHE: tuple[int, int] | None = None
