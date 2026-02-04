@@ -117,7 +117,6 @@ class ConfirmRegisterService:
         """
         将"请求身份"绑定到幂等key:
         - email
-        - verify_code_hash
         注: 任何变化都将视为不同请求
         """
         # 使用 token_hex 作为 register_token, 替代验证码

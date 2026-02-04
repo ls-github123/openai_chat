@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Any, Dict, Optional # 类型注解: 明确data结构
+from typing import Any, Dict, Optional, Mapping # 类型注解: 明确data结构
+from rest_framework.request import Request
 from rest_framework.response import Response # DRF标准响应
 
 def json_response(
@@ -7,9 +8,9 @@ def json_response(
     success: bool,
     code: str,
     message: str,
-    data: Optional[Dict[str, Any]] = None,
+    data: Optional[Mapping[str, Any]] = None,
     http_status: int = 200,
-    request=None,
+    request: Optional[Request] = None,
     request_id: Optional[str] = None,
 ) -> Response:
     """
@@ -23,11 +24,18 @@ def json_response(
     if rid is None and request is not None:
         rid = getattr(request, "request_id", None)
     
+    # 边界收口: 保证最终为 dict
+    safe_data: Dict[str, Any]
+    if data is None:
+        safe_data = {}
+    else:
+        safe_data = dict(data)
+    
     payload: Dict[str, Any] = {
         "success": success,
         "code": code,
         "message": message,
-        "data": data or {},
+        "data": safe_data,
         "request_id": rid,
     }
     return Response(payload, status=http_status)
