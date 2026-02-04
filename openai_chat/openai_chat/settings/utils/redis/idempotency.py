@@ -26,7 +26,7 @@ class IdempotencyInProgressError(Exception):
     
 class IdempotencyKeyConflictError(Exception):
     """
-    幂等 key 已被使用且结果不可用/格式异常（理论上很少见）。
+    幂等 key 已被使用且结果不可用/格式异常（理论上少见）。
     通常用于提示调用方更换 Idempotency-Key
     """
 
@@ -66,18 +66,40 @@ class IdempotencyExecutor:
 local key = KEYS[1]
 local pending_value = ARGV[1]
 local ttl = tonumber(ARGV[2])
+local req_fp = ARGV[3] or ""
+
+if (not ttl) or (ttl <= 0) then
+  ttl = 600
+end
 
 local v = redis.call("GET", key)
 if not v then
   -- 不存在：占位 PENDING
-  redis.call("SET", key, pending_value, "EX", ttl, "NX")
-  return {"NEW", ""}
+  -- 注：并发下 GET=nil 可能多个请求同时发生，此处必须检查 SET NX 返回值
+  local set_ok = redis.call("SET", key, pending_value, "EX", ttl, "NX")
+  if set_ok then
+    return {"NEW", ""}
+  else
+    -- 另一个请求抢先占位成功，本请求应视为处理中
+    return {"PENDING", ""}
+  end
 end
 
 -- 存在：解析 JSON，读 state
-local ok, obj = pcall(cjson.decode, v)
-if not ok or (type(obj) ~= "table") or (not obj["state"]) then
+local decode_ok, obj = pcall(cjson.decode, v)
+if not decode_ok or (type(obj) ~= "table") or (not obj["state"]) then
   return {"CONFLICT", ""}
+end
+
+-- fingerprint 校验
+if req_fp ~= "" then
+  local stored_fp = obj["fp"]
+  if (stored_fp == nil) or (stored_fp == "") then
+    return {"CONFLICT", ""}
+  end
+  if tostring(stored_fp) ~= tostring(req_fp) then
+    return {"CONFLICT", ""}
+  end
 end
 
 local state = obj["state"]
@@ -106,19 +128,41 @@ end
     def _build_key(self, scope: str, idem_key: str) -> str:
         return f"{self.KEY_PREFIX}:{scope}:{idem_key}"
     
-    def begin(self, scope: str, idem_key: str, ttl_seconds: int) -> IdemReadResult:
-        """开始幂等: 原子判重 + 占位"""
+    def begin(
+        self,
+        *,
+        scope: str,
+        idem_key: str,
+        ttl_seconds: int,
+        request_fingerprint: Optional[str] = None,
+    ) -> IdemReadResult:
+        """
+        开始幂等: 原子判重 + 占位
+        
+        request_fingerprint:
+        - - None/""：保持旧行为，不进行“请求语义绑定”校验
+        - 非空: 启用校验
+        """
         redis_key = self._build_key(scope=scope, idem_key=idem_key)
         now = int(time.time())
-        pending_payload = {
+        
+        fp = (request_fingerprint or "").strip()
+        
+        pending_payload: Dict[str, Any] = {
            "state": "PENDING",
            "ts": now,
         }
+        if fp:
+          pending_payload["fp"] = fp
         
         try:
             ret = self._begin_script(
               keys=[redis_key],
-              args=[json.dumps(pending_payload, ensure_ascii=False), str(ttl_seconds)],
+              args=[
+                  json.dumps(pending_payload, ensure_ascii=False),
+                  str(ttl_seconds),
+                  fp, # 传递给 Lua 校验
+              ],
             )
         except Exception as e:
             logger.exception("[IdempotencyExecutor]Idempotency begin failed (redis error). scope=%s key=%s", scope, idem_key)
@@ -148,9 +192,17 @@ end
         # 理论兜底
         raise IdempotencyKeyConflictError(f"unknown idempotency action: {action}")
     
-    def succeed(self, scope: str, idem_key: str, result: Dict[str, Any], ttl_seconds: int) -> None:
+    def succeed(
+        self,
+        scope: str,
+        idem_key: str,
+        result: Dict[str, Any],
+        ttl_seconds: int,
+        request_fingerprint: Optional[str] = None,
+    ) -> None:
         """
         标记成功, 并缓存 result
+        - 同步写入 fp, 确保 begin/commit 一致
         """
         redis_key = self._build_key(scope=scope, idem_key=idem_key)
         payload = {
@@ -158,11 +210,22 @@ end
           "ts": int(time.time()),
           "result": result,
         }
+        fp = (request_fingerprint or "").strip()
+        if fp:
+          payload["fp"] = fp
+        
         self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=ttl_seconds)
         
-    def fail(self, scope: str, idem_key: str, error: Optional[Dict[str, Any]] = None) -> None:
+    def fail(
+        self,
+        scope: str,
+        idem_key: str,
+        error: Optional[Dict[str, Any]] = None,
+        request_fingerprint: Optional[str] = None,
+    ) -> None:
         """
         标记失败(短TTL), 允许后续重试
+        - 同步写入 fp, 确保 begin/commit 一致
         注: 不要写入敏感错详情, 建议只写入 error_code 等公开信息
         """
         redis_key = self._build_key(scope=scope, idem_key=idem_key)
@@ -172,6 +235,11 @@ end
         }
         if error:
             payload["error"] = error
+        
+        fp = (request_fingerprint or "").strip()
+        if fp:
+          payload["fp"] = fp
+        
         self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=self.FAILED_TTL_SECONDS)
     
     def execute(
@@ -182,10 +250,15 @@ end
       ttl_seconds: int,
       func: Callable[[], Dict[str, Any]],
       allow_retry_after_failed: bool = True,
+      request_fingerprint: Optional[str] = None,
       ) -> Dict[str, Any]:
           """
           幂等执行器(service调用入口)
           - func 必须返回 dict(最终响应或关键结果) 
+          
+          request_fingerprint:
+          - None/""：保持旧行为
+          - 非空：启用 "同 key 同请求语义"校验
           """
           if not scope or not idem_key:
             # 幂等key缺失
@@ -194,7 +267,7 @@ end
           if ttl_seconds <= 0:
               ttl_seconds = self.DEFAULT_TTL_SECONDS
           
-          read = self.begin(scope=scope, idem_key=idem_key, ttl_seconds=ttl_seconds)
+          read = self.begin(scope=scope, idem_key=idem_key, ttl_seconds=ttl_seconds, request_fingerprint=request_fingerprint)
           
           if read.action == "DONE":
               if read.cached_result_json:
@@ -211,7 +284,6 @@ end
           if read.action == "FAILED" and not allow_retry_after_failed:
               raise IdempotencyInProgressError(f"idempotency last failed (retry disabled): {scope}:{idem_key}")
           
-          
           # NEW 或 FAILED(允许重试) -> 执行业务
           try:
               result = func()
@@ -219,9 +291,9 @@ end
                   raise TypeError("idempotency func() must return dict")
           except Exception as e:
               # 业务异常: 写 FAILED, 允许后续重试(短TTL)
-              self.fail(scope=scope, idem_key=idem_key, error={"code": "BUSINESS_ERROR"})
+              self.fail(scope=scope, idem_key=idem_key, error={"code": "BUSINESS_ERROR"}, request_fingerprint=request_fingerprint)
               raise
           
           # 成功: 写 SUCCEEDED 并缓存结果
-          self.succeed(scope=scope, idem_key=idem_key, result=result, ttl_seconds=ttl_seconds)
+          self.succeed(scope=scope, idem_key=idem_key, result=result, ttl_seconds=ttl_seconds, request_fingerprint=request_fingerprint)
           return result

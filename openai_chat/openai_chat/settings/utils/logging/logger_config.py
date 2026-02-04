@@ -75,7 +75,6 @@ def _conf_fingerprint(conf: Mapping[str, Any]) -> Tuple[Any, ...]:
     )
 
 
-
 def build_logging(conf: Mapping[str, Any]) -> Dict[str, Any]:
     """ 
     构建 Django LOGGING dictConfig 配置
@@ -116,7 +115,7 @@ def build_logging(conf: Mapping[str, Any]) -> Dict[str, Any]:
     log_dir.mkdir(parents=True, exist_ok=True)
     
     # 默认格式化器配置
-    default_formatter = "json" if prefer_json else "verbose"
+    default_formatter = "json" if prefer_json else "verbose_extra"
     
     # 格式化器配置
     formatters: Dict[str, Any] = {
@@ -124,12 +123,18 @@ def build_logging(conf: Mapping[str, Any]) -> Dict[str, Any]:
             "format": "[{asctime}] [{levelname}] [{name}] {message}", # 详细格式
             "style": "{",
         },
+        # verbose_extra - 自动输出 extra(文本 key=value)
+        "verbose_extra": {
+            "()": "openai_chat.settings.utils.logging.formatters.ExtraKVFormatter",
+            "format": "[{asctime}] [{levelname}] [{name}] {message}",
+            "style": "{",
+        },
         "simple": { # 简单格式化器
             "format": "{levelname}: {message}",
             "style": "{",
         },
         "json": { # JSON 格式化器
-            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "()": "openai_chat.settings.utils.logging.formatters.ExtraJSONFormatter",
             "format": "%(asctime)s %(levelname)s %(name)s %(process)d %(threadName)s %(message)s",
         },
     }
@@ -150,7 +155,7 @@ def build_logging(conf: Mapping[str, Any]) -> Dict[str, Any]:
         handlers["console"] = {
             "class": "logging.StreamHandler",
             "level": "DEBUG",
-            "formatter": "simple",
+            "formatter": default_formatter,
         }
     
     # 为 FILES 中出现的“文件名”去重创建 handler（同文件复用）

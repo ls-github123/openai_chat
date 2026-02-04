@@ -189,7 +189,7 @@ else:
     REDLOCK_SERVERS = [
         {
             "host": REDIS_HOST,
-            "PORT": int(REDIS_PORT),
+            "port": int(REDIS_PORT),
             "db": 0, # 锁专用DB
             "password": REDIS_PASSWORD,
         }

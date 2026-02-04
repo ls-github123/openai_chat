@@ -16,8 +16,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     """
     # editable=False 该字段不会在Django管理后台或表单中显示,也不能被编辑器修改
     id = models.BigIntegerField('用户ID', primary_key=True, editable=False, help_text="雪花算法生成的用户ID")
-    email = models.EmailField('邮箱地址', unique=True, null=False, blank=False, help_text="用于用户账户登录与验证")
-    username = models.CharField('用户名', max_length=150, unique=True, null=False, blank=False, help_text="可选用户名")
+    email = models.EmailField('邮箱地址', unique=True, null=False, blank=False, db_index=True, help_text="用于用户账户登录与验证")
+    username = models.CharField('用户名', max_length=150, unique=False, null=False, blank=False, db_index=True, default="", help_text="用户名")
     phone = models.CharField("手机号", max_length=20, null=True, blank=True, help_text="可选添加手机号")
     organization = models.BigIntegerField("组织ID", null=True, blank=True, help_text="所属组织/项目")
     

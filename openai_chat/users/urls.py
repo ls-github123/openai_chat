@@ -1,6 +1,6 @@
 from django.urls import path
 from users.views.register_pre_view import RegisterPreView # 用户预注册视图
-from users.views.register_confirm import RegisterConfirmView # 用户注册确认视图
+from users.views.register_confirm_view import RegisterConfirmView # 用户注册确认视图
 from users.views.login_pre import LoginPreView # 用户登录阶段一视图(邮箱+密码, 校验是否启用TOTP)
 from users.views.loginTOTPVerifyView import LoginTOTPVerifyView # 用户登录阶段二视图(校验TOTP验证码)
 # from users.views.userinfo_view import 
