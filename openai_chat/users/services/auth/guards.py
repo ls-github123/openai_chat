@@ -32,11 +32,9 @@ from __future__ import annotations
 from typing import Optional # 延迟类型注解解析
 from users.models import User # 用户模型
 from openai_chat.settings.utils.logging import get_logger
-from users.exceptions import (
-    AccountDeletedError,
-    AccountDisabledError,
-    InvalidUserError,
-)
+
+from openai_chat.settings.utils.exceptions import AppException # 统一业务异常
+from openai_chat.settings.utils.error_codes import ErrorCodes # 统一错误码表
 
 logger = get_logger("users")
 
@@ -50,7 +48,10 @@ def ensure_user_can_login(user: Optional[User], *, stage: str = "login") -> None
     """
     if user is None:
         logger.warning("[AuthGuard] reject: user is None stage=%s", stage)
-        raise InvalidUserError("用户信息无效")
+        raise AppException.unauthorized(
+            code=ErrorCodes.AUTH_INVALID_USER,
+            message="认证失败",
+        )
     
     # 防御式读取
     is_deleted = bool(getattr(user, "is_deleted", False))
@@ -62,7 +63,10 @@ def ensure_user_can_login(user: Optional[User], *, stage: str = "login") -> None
             "[AuthGuard] reject: deleted stage=%s user_id=%s email=%s",
             stage, getattr(user, "id", None), getattr(user, "email", None),
         )
-        raise AccountDeletedError("账户已被注销")
+        raise AppException.forbidden(
+            code=ErrorCodes.ACCOUNT_DELETED,
+            message="账户已被注销",
+        )
     
     # 再判定禁用状态
     if not is_active:
@@ -70,4 +74,7 @@ def ensure_user_can_login(user: Optional[User], *, stage: str = "login") -> None
             "[AuthGuard] reject: disabled stage=%s user_id=%s email=%s",
             stage, getattr(user, "id", None), getattr(user, "email", None),
         )
-        raise AccountDisabledError("账户已被禁用")
+        raise AppException.forbidden(
+            code=ErrorCodes.ACCOUNT_DISABLED,
+            message="账户已被禁用",
+        )

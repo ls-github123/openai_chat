@@ -248,7 +248,7 @@ class ConfirmRegisterService:
         with build_lock(key=lock_key, ttl=lock_ttl_ms, strategy=self.LOCK_STRATEGY) as acquired:
             if not acquired:
                 # 未拿到锁: 同邮箱正在被其他并发请求处理
-                raise AppException.conflict(
+                raise AppException.bad_request(
                     code=self._error_code("COMMON_SYSTEM_BUSY", fallback="COMMON_ERROR"),
                     message="请求处理中, 请勿重复提交",
                 )
@@ -337,14 +337,14 @@ class ConfirmRegisterService:
         
         except IdempotencyInProgressError:
             # 同一幂等 key 正在处理中, 提示客户端稍后重试
-            raise AppException.conflict(
+            raise AppException.bad_request(
                 code=self._error_code("IDEMPOTENCY_IN_PROGRESS"),
                 message="请求处理中, 请勿重复提交",
             )
         
         except IdempotencyKeyConflictError:
             # 不同请求体却复用同一 Idempotency-Key
-            raise AppException.conflict(
+            raise AppException.bad_request(
                 code=self._error_code("IDEMPOTENCY_KEY_CONFLICT"),
                 message="请求参数已变化，请更换 Idempotency-Key",
             )

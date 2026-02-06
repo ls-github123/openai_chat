@@ -13,95 +13,72 @@
 - 工厂方法统一 HTTP 状态码，service 层避免手写数字
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, Optional, Mapping
+from typing import Any, Mapping, Dict
+from rest_framework import status
 
-# - frozen=True：异常对象不可变，防止被后续代码意外修改造成日志与响应不一致
-# - slots=True：减少内存占用，提高属性访问效率（大量异常时更稳）
-@dataclass(frozen=True, slots=True)
+def _normalize_data(data: Any) -> Dict[str, Any]:
+    """
+    强制把 data 规整为 dict, 避免 handler/json_response 在序列化阶段不稳定
+    """
+    if data is None:
+        return {}
+    if isinstance(data, Mapping):
+        return dict(data)
+    return {"detail": data}
+
+
 class AppException(Exception):
     """
-    业务异常(用于service层, 交 DRF 全局异常处理器转为五段式响应):
+    业务异常(业务层唯一允许抛出的异常类型):
+    目标：
+    - service/guard/jwt_auth 只需 raise AppException.xxx(...)
+    - DRF 全局异常处理器捕获 AppException -> 五段式响应
+    - 结构稳定：code/message/http_status/data
+    
+    参数:
     - code: 业务错误码(稳定)
     - message: 用户可读提示(前端提示信息)
     - http_status: HTTP状态码
     - data: 附加信息(不含敏感字段/JSON序列化)
     """
-    code: str
-    message: str
-    http_status: int = 400
-    data: Optional[Mapping[str, Any]] = field(default_factory=dict)
+    __slots__ = ("code", "message", "http_status", "data")
     
-    def __post_init__(self) -> None:
-        # 确保 Exception 的标准行为一致：str(exc) 与日志输出可直接显示 message
-        super().__init__(self.message)
-        
-        raw = self.data
-        if raw is None:
-            object.__setattr__(self, "data", {})
-            return
-        
-        # Mapping(如 dict OrderedDict) -> dict 拷贝
-        if isinstance(raw, Mapping):
-            object.__setattr__(self, "data", dict(raw))
-            return
-        
-        # 其他类型: 兜底封装, 避免 DRF Response JSON 渲染失败
-        object.__setattr__(self, "data", {"detail": raw})
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        http_status: int = status.HTTP_400_BAD_REQUEST,
+        data: Any = None,
+    ) -> None:
+        # Exception 的标准行为：str(exc) 显示 message
+        super().__init__(message)
+        self.code = str(code)
+        self.message = str(message)
+        self.http_status = int(http_status)
+        self.data = _normalize_data(data)
     
     # 工厂方法: 标准化 HTTP 状态码
     @classmethod
-    def bad_request(
-        cls, *, code: str, message: str, data: Optional[Mapping[str, Any]] = None
-    ) -> "AppException":
-        return cls(code=code, message=message, http_status=400, data=data)
+    def bad_request(cls, *, code: str, message: str, data: Any = None) -> "AppException":
+        return cls(code=code, message=message, http_status=status.HTTP_400_BAD_REQUEST, data=data)
     
     @classmethod
-    def unauthorized(
-        cls, *, code: str, message: str = "未登录或登录已失效", data: Optional[Mapping[str, Any]] = None
-    ) -> "AppException":
-        return cls(code=code, message=message, http_status=401, data=data)
+    def unauthorized(cls, *, code: str, message: str = "未登录或登录已失效", data: Any = None) -> "AppException":
+        return cls(code=code, message=message, http_status=status.HTTP_401_UNAUTHORIZED, data=data)
+
+    @classmethod
+    def forbidden(cls, *, code: str, message: str = "无权限访问", data: Any = None) -> "AppException":
+        return cls(code=code, message=message, http_status=status.HTTP_403_FORBIDDEN, data=data)
+
+    @classmethod
+    def not_found(cls, *, code: str, message: str = "资源不存在", data: Any = None) -> "AppException":
+        return cls(code=code, message=message, http_status=status.HTTP_404_NOT_FOUND, data=data)
     
     @classmethod
-    def forbidden(
-        cls, *, code: str, message: str = "无权限访问", data: Optional[Mapping[str, Any]] = None
-    ) -> "AppException":
-        return cls(code=code, message=message, http_status=403, data=data)
+    def too_many_requests(cls, *, code: str, message: str = "请求过于频繁", data: Any = None) -> "AppException":
+        return cls(code=code, message=message, http_status=status.HTTP_429_TOO_MANY_REQUESTS, data=data)
     
     @classmethod
-    def not_found(
-        cls, *, code: str, message: str = "资源不存在", data: Optional[Mapping[str, Any]] = None
-    ) -> "AppException":
-        return cls(code=code, message=message, http_status=404, data=data)
-    
-    @classmethod
-    def conflict(
-        cls, *, code: str, message: str, data: Optional[Mapping[str, Any]] = None
-    ) -> "AppException":
-        return cls(code=code, message=message, http_status=409, data=data)
-    
-    @classmethod
-    def too_many_requests(
-        cls,
-        *,
-        code: str,
-        message: str = "请求过于频繁, 请稍后再试",
-        data: Optional[Mapping[str, Any]] = None,
-    ) -> "AppException":
-        """
-        429 Too Many Requests: 自定义业务限流(非 DRF Throttled)
-        """
-        return cls(code=code, message=message, http_status=429, data=data)
-    
-    @classmethod
-    def internal_error(
-        cls,
-        *,
-        code: str = "SYSTEM.INTERNAL_ERROR",
-        message: str = "系统繁忙, 请稍后再试",
-        data: Optional[Mapping[str, Any]] = None,
-    ) -> "AppException":
-        """
-        500 Internal Server Error：业务层需要“主动兜底”时可用（一般更推荐让未知异常交给 handler 处理）
-        """
-        return cls(code=code, message=message, http_status=500, data=data)
+    def internal_error(cls, *, code: str = "SYSTEM.INTERNAL_ERROR", message: str = "系统繁忙, 请稍后再试", data: Any = None) -> "AppException":
+        return cls(code=code, message=message, http_status=status.HTTP_500_INTERNAL_SERVER_ERROR, data=data)

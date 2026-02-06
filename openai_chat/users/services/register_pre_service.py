@@ -154,7 +154,7 @@ class RegisterPreService:
         # 1. 邮箱重复性检查(避免重复注册)
         if User.objects.filter(email=self.email).exists():
             logger.warning("[用户注册] 预注册失败: 邮箱已存在 email=%s", self.email)
-            raise AppException.conflict(
+            raise AppException.bad_request(
 				code=ErrorCodes.REGISTER_EMAIL_EXISTS,
                 message="该邮箱已注册, 请直接登录或使用密码重置功能",
 			)

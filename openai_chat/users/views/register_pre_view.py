@@ -5,6 +5,7 @@ from rest_framework.views import APIView # DRF 基础视图
 from rest_framework.permissions import AllowAny # 允许匿名访问
 from openai_chat.settings.utils.response_wrapper import json_response # 统一响应封装
 from openai_chat.settings.utils.error_codes import ErrorCodes # 错误码常量表
+from rest_framework import status
 
 from users.serializers.auth_register_pre_serializer import RegisterPreSerializer # 预注册序列化器
 from users.services.register_pre_service import RegisterPreService # 预注册服务类
@@ -40,9 +41,8 @@ class RegisterPreView(APIView):
         # 3.成功响应(统一结构)
         return json_response(
             success=True,
-            code=ErrorCodes.OK,
+            code=ErrorCodes.SUCCESS,
             message="验证码邮件已发送, 请注意查收",
             data=result,
-            http_status=200,
-            request=request,
+            http_status=status.HTTP_200_OK,
         )

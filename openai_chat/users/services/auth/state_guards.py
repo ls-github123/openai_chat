@@ -37,12 +37,8 @@ from typing import Any, Dict
 from openai_chat.settings.base import REDIS_DB_USERS_STATE # 用户状态事实源占用库
 from openai_chat.settings.utils.redis import get_redis_client
 from openai_chat.settings.utils.logging import get_logger
-
-from users.exceptions import (
-    AccountDeletedError,
-    AccountDisabledError,
-    InvalidUserError,
-)
+from openai_chat.settings.utils.exceptions import AppException
+from openai_chat.settings.utils.error_codes import ErrorCodes
 
 logger = get_logger("users")
 
@@ -85,7 +81,11 @@ class UserStateGuard:
         :return: 用户状态事实源字典(均为str类型), 供上层写入 request 上下文
         """
         if not user_id:
-            raise InvalidUserError("用户信息无效")
+            logger.warning("[AuthStateGuard] reject: invalid user_id stage=%s", stage)
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_USER,
+                message="认证失败",
+            )
         
         r = get_redis_client(db=REDIS_DB_USERS_STATE)
         key = cls._key(int(user_id))
@@ -94,29 +94,42 @@ class UserStateGuard:
         if not raw:
             # 用户状态事实源不存在, 视为无效用户
             logger.warning("[AuthStateGuard] reject: state missing stage=%s user_id=%s", stage, user_id)
-            raise InvalidUserError("用户状态信息无效, 请重新登录")
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_USER,
+                message="认证失败",
+            )
         
         if not isinstance(raw, dict):
             logger.error(
                 "[AuthStateGuard] reject: invalid redis return type stage=%s user_id=%s type=%s",
                 stage, user_id, type(raw),
             )
-            raise InvalidUserError("用户状态信息无效, 请重新登录")
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_USER,
+                message="认证失败",
+            )
         
+        # 统一转换为 str
         state: Dict[str, str] = {cls._to_str(k): cls._to_str(v) for k, v in raw.items()}
         
         is_deleted = cls._to_bool_flag(state.get("is_deleted", "0"), default=False)
         is_active = cls._to_bool_flag(state.get("is_active", "0"), default=False)
         
-        # 账户注销校验优先
+        # 账户注销校验优先 -> 403
         if is_deleted:
             logger.warning("[AuthStateGuard] reject: deleted stage=%s user_id=%s", stage, user_id)
-            raise AccountDeletedError("账户已被注销")
+            raise AppException.forbidden(
+                code=ErrorCodes.ACCOUNT_DELETED,
+                message="该账户已被注销",
+            )
         
+        # 账户禁用校验
         if not is_active:
-            # 账户禁用校验
             logger.warning("[AuthStateGuard] reject: disabled stage=%s user_id=%s", stage, user_id)
-            raise AccountDisabledError("账户已被禁用")
+            raise AppException.forbidden(
+                code=ErrorCodes.ACCOUNT_DISABLED,
+                message="该账户已被禁用",
+            )
         
         # 校验通过
         return state
