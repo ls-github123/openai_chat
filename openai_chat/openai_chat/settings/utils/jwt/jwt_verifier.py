@@ -1,27 +1,32 @@
 """
-Azure Key Vault 验证模块
-- 自动从 Azure Key Vault 获取 RSA 密钥中的 n/e
-- 构造 RSA 公钥对象，并缓存其 PEM 形式至 Redis
-- 用于验证 RS256 JWT Token 的签名合法性
-- 不依赖 x5c 或上传证书，仅依赖 Azure Key 类型资源
-"""
-import json, time, hashlib, base64, os, uuid
-from typing import Dict, Any, cast, Union, Optional # 类型注解
-from cryptography.hazmat.primitives.asymmetric import rsa, padding # RSA 加密与填充方式
-from cryptography.hazmat.primitives import hashes, serialization # 哈希算法与序列化工具
-from cryptography.hazmat.backends import default_backend # 加密算法后端实现
-from azure.identity import DefaultAzureCredential # Azure 默认身份认证方式
-from azure.keyvault.keys import KeyClient # Azure 密钥客户端
-from openai_chat.settings.utils.redis import get_redis_client
-from openai_chat.settings.base import REDIS_DB_JWT_CACHE # JWT模块签名结果 Redis 缓存占用库
-from openai_chat.settings.utils.logging import get_logger
-from openai_chat.settings.utils.locks import build_lock # 引入redlock分布式锁
-from django.conf import settings
-from .jwt_blacklist import is_blacklisted # JWT黑名单校验
+JWT 验证器模块(ES256)
 
-# === 环境判定与格式器策略 ===
-DJANGO_SETTINGS_MODULE = os.getenv('DJANGO_SETTINGS_MODULE', 'openai_chat.settings.dev') # 获取当前环境变量
-IS_DEV = "dev" in DJANGO_SETTINGS_MODULE.lower() # 判断是否为开发环境
+功能:
+- 仅负责“技术验证”（结构解析、验签、claims 校验、黑名单校验、缓存）
+- 不负责业务异常映射，不返回 HTTP/JSON，不抛 AppException
+- 统一抛 JWTValidationError，由上层（jwt_auth / service）转换为业务错误
+
+注:
+- 只接受 ES256 JWT
+- 缓存命中后仍执行 claims + 黑名单校验，避免"缓存绕过撤销"
+- 公钥（PEM）缓存到 Redis（默认 1 小时）
+- payload 结果短缓存（默认不超过 60 秒，且不超过 token 剩余寿命）
+- 验签失败时支持“强制刷新公钥再验一次”（应对密钥轮换窗口）
+"""
+from __future__ import annotations
+import base64, hashlib, json, time, uuid
+from typing import Any, Dict, Optional, Union, cast
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.keys import KeyClient
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
+from django.conf import settings
+from openai_chat.settings.base import REDIS_DB_JWT_CACHE
+from openai_chat.settings.utils.locks import build_lock
+from openai_chat.settings.utils.logging import get_logger
+from openai_chat.settings.utils.redis import get_redis_client
+from .jwt_blacklist import is_blacklisted
 
 logger = get_logger("project.jwt")
 
@@ -30,212 +35,404 @@ class JWTValidationError(Exception):
     def __init__(self, message: str):
         super().__init__(f"[JWT Verify Error] {message}")
 
-class AzureRS256Verifier:
+class AzureES256Verifier:
     """
-    JWT RS256 验证器 (Azure Key Vault 公钥)
-    - 用于验证 access_token 是否有效
+    ES256 JWT 验证器(Azure Key Vault公钥)
+    
+    主要功能:
+    - 从 Key Vault 读取 EC(P-256) 公钥参数 x/y 并构造公钥对象
+    - 验证 JWT 签名(ES256)
+    - 校验 claims (exp/iat/nbf/iss/aud/sub/jti/typ/scope/sv)
+    - 黑名单校验(jti)
+    - Redis 缓存公钥与 payload
+    
+    注:
+    - JWT ES256 签名格式是 raw(r||s, 64 bytes)
     """
-    _instance: Optional["AzureRS256Verifier"] = None
+    _instance: Optional[AzureES256Verifier] = None
+    ALGORITHM = "ES256"
     
     def __init__(self, vault_url: str, key_name: str, redis_prefix: str = "jwt:verify:"):
-        self.vault_url = vault_url # Azure Key Vault 地址
-        self.key_name = key_name # 密钥名称
-        self.redis_prefix = (redis_prefix.decode() if isinstance(redis_prefix, bytes) else redis_prefix) # Redis 缓存前缀
+        self.vault_url = vault_url
+        self.key_name = key_name
+        self.redis_prefix = redis_prefix.decode() if isinstance(redis_prefix, bytes) else redis_prefix
+        
+        # Redis 用于缓存公钥与payload
         self.redis = get_redis_client(db=REDIS_DB_JWT_CACHE)
+        
+        # Azure SDK 客户端
         self.credential = DefaultAzureCredential()
         self.key_client = KeyClient(vault_url=self.vault_url, credential=self.credential)
-        self.is_dev = IS_DEV # 是否处于开发环境
-        self.public_key = self._load_or_cache_public_key() # 获取/构造并加载 RSA 公钥对象
+        
+        # 初始化公钥(优先读取缓存)
+        self.public_key = self._load_or_cache_public_key(force_refresh=False)
     
-    @staticmethod
-    def _raw_to_int(val: Union[str, bytes]) -> int:
+    @property
+    def _is_dev(self) -> bool:
         """
-        将 Azure SDK 返回的 n/e 字段统一转换 int
+        环境判定:
+        -  DEBUG=True 或 ENVIRONMENT=dev 视为开发环境
+        - 开发环境默认不启用 payload 缓存(便于调试一致性)
         """
-        if isinstance(val, bytes): # 纯二进制大端整数表示
-            return int.from_bytes(val, "big")
-        if isinstance(val, str): # Base64URL编码
-            return int.from_bytes(base64.urlsafe_b64decode(val + "=="), "big")
-        raise TypeError(f"未知 n/e 类型: {type(val)}")
+        env = str(getattr(settings, "ENVIRONMENT", "")).lower()
+        return bool(getattr(settings, "DEBUG", False)) or env == "dev"
     
     @staticmethod
     def _b64url_decode(data: str) -> bytes:
+        """
+        Base64URL 解码(自动补齐 '=' padding)
+        """
         data += "=" * ((4 - len(data) % 4) % 4)
-        return base64.urlsafe_b64decode(data)
+        return base64.urlsafe_b64decode(data.encode("utf-8"))
     
-    def _load_or_cache_public_key(self, force_refresh: bool = False):
+    @staticmethod
+    def _raw_to_int(value: Union[str, bytes, int]) -> int:
         """
-        从 Redis 加载或通过 n/e 构造 RSA 公钥对象
-        :param force_refresh: 是否强制刷新 Redis 中的缓存
-        并缓存 PEM 格式文本
+        将密钥参数统一转换为 int
+        - int 直接返回
+        - bytes 按大端整数
+        - str 按 base64url 解码后再转大端整数
         """
-        cache_key = f"{self.redis_prefix}pem:{self.key_name}"
+        if isinstance(value, int):
+            return value
+        if isinstance(value, bytes):
+            return int.from_bytes(value, "big")
+        if isinstance(value, str):
+            raw = AzureES256Verifier._b64url_decode(value)
+            return int.from_bytes(raw, "big")
+        raise TypeError(f"Unsupported key parameter type: {type(value)}")
+    
+    @staticmethod
+    def _jws_raw_to_der(raw_sig: bytes, part_len: int = 32) -> bytes:
+        """
+        JWT ES256 签名 raw(r||s) -> DER 转换
+        ES256 使用 P-256曲线
+        - r: 32 bytes
+        - s: 32 bytes
+        - 总长度必须 64 bytes
+        """
+        if len(raw_sig) != part_len * 2:
+            raise JWTValidationError("Invalid ES256 signature length (expect 64 bytes)")
         
-        # 引入分布式锁防止并发刷新
-        lock_key = f"lock:jwt:publickey:{self.key_name}"
-        lock = build_lock(lock_key, ttl=3000, strategy="safe")
+        r = int.from_bytes(raw_sig[:part_len], "big")
+        s = int.from_bytes(raw_sig[part_len:], "big")
+        return asym_utils.encode_dss_signature(r, s)
+    
+    def _expected_issuer(self) -> str:
+        return str(getattr(settings, "JWT_ISSUER", "openai-chat.xyz"))
+    
+    def _expected_audience(self) -> str:
+        return str(getattr(settings, "JWT_AUDIENCE", "openai_chat_user"))
+    
+    def _allowed_scopes(self) -> set[str]:
+        """
+        允许的 scope 集合。
+        可通过 settings.JWT_ALLOWED_SCOPES 覆盖
+        """
+        scopes = getattr(settings, "JWT_ALLOWED_SCOPES", {"user", "admin", "super", "refresh"})
+        return {str(s) for s in scopes}
+    
+    def _load_or_cache_public_key(self, force_refresh: bool = False) -> ec.EllipticCurvePublicKey:
+        """
+        加载 ES256 公钥 (P-256)：
+        1) 非 force_refresh 时先读 Redis PEM 缓存；
+        2) 未命中或强制刷新则从 Azure Key Vault 读取 x/y 构建公钥；
+        3) 写回 Redis(失败仅告警，不阻断主流程)。
+        """
+        cache_key = f"{self.redis_prefix}pem:{self.ALGORITHM}:{self.key_name}"
+        lock_key = f"lock:jwt:publickey:{self.ALGORITHM}:{self.key_name}"
         
-        with lock:
+        # 分布式锁: 避免并发下重复回源 Azure
+        with build_lock(lock_key, ttl=3000, strategy="safe"):
             if not force_refresh:
                 try:
                     pem_cached = self.redis.get(cache_key)
                     if pem_cached:
-                        logger.info("[JWT Verify] Redis 缓存命中公钥")
-                        pem_bytes = pem_cached if isinstance(pem_cached, bytes) else str(pem_cached).encode()
-                        return serialization.load_pem_public_key(pem_bytes, backend=default_backend())
+                        pem_bytes = pem_cached if isinstance(pem_cached, bytes) else str(pem_cached).encode("utf-8")
+                        key = serialization.load_pem_public_key(pem_bytes)
+                        if not isinstance(key, ec.EllipticCurvePublicKey):
+                            raise JWTValidationError("Cached key type mismatch: expect EC public key")
+                        return key
                 except Exception as e:
-                    logger.warning(f"[JWT Verify] 读取 Redis 公钥缓存失败: {e}")
+                    logger.warning("[JWT Verify] read public key cache failed: %s", e)
             
-            # 若缓存不存在, 则从 Azure 获取密钥对结构
+            # 回源 Azure Key Vault
             key_bundle = self.key_client.get_key(name=self.key_name)
-            n_raw, e_raw = getattr(key_bundle.key, "n", None), getattr(key_bundle.key, "e", None)
-            if n_raw is None or e_raw is None:
-                raise JWTValidationError("获取公钥失败: n/e 字段缺失")
+            x_raw = getattr(key_bundle, "x", None)
+            y_raw = getattr(key_bundle, "y", None)
             
-            # 构造 RSA 公钥对象
-            public_numbers = rsa.RSAPublicNumbers(
-                e=self._raw_to_int(e_raw),
-                n=self._raw_to_int(n_raw),
+            if x_raw is None or y_raw is None:
+                raise JWTValidationError("Azure EC key missing x/y")
+            
+            public_numbers = ec.EllipticCurvePublicNumbers(
+                x=self._raw_to_int(x_raw),
+                y=self._raw_to_int(y_raw),
+                curve=ec.SECP256R1(),
             )
-            public_key = public_numbers.public_key(default_backend())
+            public_key = public_numbers.public_key()
             
             try:
-                # 序列化为 PEM 格式并缓存到 Redis(缓存 1 小时)
                 pem = public_key.public_bytes(
                     encoding=serialization.Encoding.PEM,
                     format=serialization.PublicFormat.SubjectPublicKeyInfo,
-                ).decode()
-                # 缓存 Redis 加入容错处理
-                self.redis.set(cache_key, pem, ex=3600, nx=not force_refresh)
+                ).decode("utf-8")
+                self.redis.set(cache_key, pem, ex=3600, nx=not force_refresh) # 1小时缓存，force_refresh时强制覆盖
             except Exception as e:
-                logger.error(f"[JWT Verify] Redis 缓存失败: {e}")
-                
-            logger.info(f"[JWT Verify] 构造并缓存 PEM 公钥成功: {self.key_name}")
+                logger.warning("[JWT Verify] write public key cache failed: %s", e)
+            
             return public_key
     
-    
-    def verify(self, token: str) -> Dict[str, Any]:
+    def _verify_signature_with_rotation(self, signing_input: bytes, raw_signature: bytes) -> None:
         """
-        验证 JWT Token 的签名合法性和过期状态(支持 payload 短时缓存)
-        :param token: 待验证的 JWT 三段式字符串(header.payload.signature)
-        :return: 解码后的 payload 内容(字典)
+        验签并处理密钥轮换窗口：
+        - 第一次验签失败（InvalidSignature）时，强制刷新公钥再验一次；
+        - 若仍失败则判定签名无效。
         """
-        # 使用 sha256 哈希生成稳定缓存键
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        payload_cache_key = f"{self.redis_prefix}payload:{token_hash}" # 使用 hash 防止 token 过长
+        der_signature = self._jws_raw_to_der(raw_signature, part_len=32)
         
-        # 读取缓存
-        if not self.is_dev: # 仅在生产环境启用 payload redis 缓存
+        def _do_verify(pub_key: ec.EllipticCurvePublicKey) -> None:
+            pub_key.verify(der_signature, signing_input, ec.ECDSA(hashes.SHA256()))
+        
+        try:
+            _do_verify(self.public_key)
+        except InvalidSignature:
+            # 可能发生密钥轮换, 强制刷新公钥后再校验
+            self.public_key = self._load_or_cache_public_key(force_refresh=True)
             try:
-                cached_raw = self.redis.get(payload_cache_key)
-                cached: Union[str, bytes, memoryview, None] = cast(Union[str, bytes, memoryview, None], cached_raw) # 告诉检查器真实类型
-                if cached:
-                    if isinstance(cached, str):
-                        payload_json = cached
-                    elif isinstance(cached, (bytes, memoryview)):
-                        # memoryview先转 bytes
-                        payload_json = bytes(cached).decode("utf-8")
-                    else: # 理论不会到达
-                        raise TypeError(f"Unexpected redis payload type: {type(cached)}")
-                    return json.loads(payload_json)
+                _do_verify(self.public_key)
+                return
             except Exception as e:
-                logger.warning(f"[JWT Verify] Redis 缓存读取失败: {e}")
-        
-        # 解析-验签(三段式结构)
-        try:
-            # 解析 JWT 三段式
-            header_b64, payload_b64, signature_b64 = token.split(".")
-        except ValueError:
-            raise JWTValidationError("JWT 格式非法: 应当由header.payload.signature三段组成")
-        
-        # 拼接签名输入(header + "." + payload), 编码为 bytes
-        signing_input = f"{header_b64}.{payload_b64}".encode()
-        # 解码 base64url 格式签名段
-        signature = self._b64url_decode(signature_b64)
-            
-        # 校验签名算法, 防止算法注入攻击(alg none漏洞)
-        header = json.loads(self._b64url_decode(header_b64))
-        if header.get("alg") != "RS256":
-            raise JWTValidationError(f"不支持的 JWT 签名算法: {header.get('alg')}")
-        # 仅允许 RSA 公钥类型用于验证 RS256 签名
-        if not isinstance(self.public_key, rsa.RSAPublicKey): # 检查公钥类型是否符合 RSA 标准
-            raise JWTValidationError("无效 RSA 公钥, 无法进行 RS256 签名验证")
-        # 执行签名验证(RSASSA-PKCS1-v1_5 + SHA256)
-        try:
-            self.public_key.verify(
-                signature,
-                signing_input,
-                padding.PKCS1v15(), # 使用 RSA-PKCS#1 v1.5 + SHA256 进行标准 RS256 验签
-                hashes.SHA256(),
-            )
+                raise JWTValidationError(f"Token signature invalid after key refresh: {e}") from e
         except Exception as e:
-            raise JWTValidationError(f"令牌签名验证失败: {e}")
-        
-        # 解析 payload
-        payload = json.loads(self._b64url_decode(payload_b64))
-        now = int(time.time())
-        
-        # 核心字段校验
-        if now > payload.get("exp", 0):
-            raise JWTValidationError("Token 已过期")
-        
-        if payload.get("iat", now + 1) > now:
-            raise JWTValidationError("Token时间非法")    
-        
-        if not isinstance(payload.get("sub"), str) or len(payload["sub"]) < 6:
-            raise JWTValidationError("Token sub 字段非法")
-        
-        # 可选校验: 签发者字段
-        if payload.get("iss") != getattr(settings, "JWT_ISSUER", "https://openai-chat.xyz"):
-            raise JWTValidationError("Token 签发者不受信任")
-        
-        # 可选校验: 受众字段
-        if payload.get("aud") != getattr(settings, "JWT_AUDIENCE", "openai-chat-client"):
-            raise JWTValidationError("Token受众不匹配")
-        
-        # 可选校验: scope 权限字段
-        if payload.get("scope") not in {"user", "admin", "super", "refresh"}:
-            raise JWTValidationError("Token scope非法")
-        
-        # jti 校验
-        jti = payload.get("jti")
+            raise JWTValidationError(f"Token signature verify failed: {e}") from e
+    
+    @staticmethod
+    def _validate_sub(sub: Any) -> None:
+        """
+        sub 约束（项目语义）：
+        - 必须是数字字符串（用户ID字符串化）。
+        """
+        if not isinstance(sub, str) or not sub.isdigit():
+            raise JWTValidationError("Token sub invalid")
+    
+    @staticmethod
+    def _validate_jti(jti: Any) -> str:
+        """
+        jti 约束：
+        - 必须是 UUID 字符串。
+        """
+        if not isinstance(jti, str):
+            raise JWTValidationError("Token jti invalid")
+
         try:
             uuid.UUID(jti)
-        except Exception:
-            raise JWTValidationError("Token jti 字段非法")
-        
-        # 黑名单检查
+            return jti
+        except Exception as e:
+            raise JWTValidationError(f"Token jti invalid: {e}") from e
+    
+    def _validate_claims(self, payload: Dict[str, Any]) -> str:
+        """
+        claims 校验，返回 jti（供黑名单校验）：
+        - exp 必须存在且未过期
+        - iat 必须存在且不在未来
+        - nbf 如存在则必须已生效
+        - iss/aud/sub/jti/typ/scope/sv（可选）必须合法
+        """
+        now = int(time.time())
+
+        # exp
+        exp = payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            raise JWTValidationError("Token exp missing or invalid")
+        if now > int(exp):
+            raise JWTValidationError("Token expired")
+
+        # iat
+        iat = payload.get("iat")
+        if not isinstance(iat, (int, float)) or int(iat) > now:
+            raise JWTValidationError("Token iat invalid")
+
+        # nbf（可选）
+        nbf = payload.get("nbf")
+        if nbf is not None:
+            if not isinstance(nbf, (int, float)) or int(nbf) > now:
+                raise JWTValidationError("Token nbf invalid")
+
+        # sub / iss / aud
+        self._validate_sub(payload.get("sub"))
+
+        if payload.get("iss") != self._expected_issuer():
+            raise JWTValidationError("Token issuer mismatch")
+
+        expected_aud = self._expected_audience()
+        aud = payload.get("aud")
+        if isinstance(aud, list):
+            if expected_aud not in aud:
+                raise JWTValidationError("Token audience mismatch")
+        elif aud != expected_aud:
+            raise JWTValidationError("Token audience mismatch")
+
+        # typ / scope
+        if payload.get("typ") not in {"access", "refresh"}:
+            raise JWTValidationError("Token typ invalid")
+
+        if payload.get("scope") not in self._allowed_scopes():
+            raise JWTValidationError("Token scope invalid")
+
+        # sv（可选，会话版本号）
+        sv = payload.get("sv")
+        if sv is not None:
+            try:
+                if int(sv) < 1:
+                    raise ValueError("sv < 1")
+            except Exception as e:
+                raise JWTValidationError(f"Token sv invalid: {e}") from e
+
+        return self._validate_jti(payload.get("jti"))
+    
+    @staticmethod
+    def _ensure_not_blacklisted(jti: str) -> None:
+        """
+        黑名单校验。
+        约定：is_blacklisted 内部应 fail-closed（依赖异常时按“已撤销”处理）。
+        """
         try:
             if is_blacklisted(jti):
-                raise JWTValidationError("Token 已被列入JWT黑名单")
+                raise JWTValidationError("Token revoked")
+        except JWTValidationError:
+            raise
         except Exception as e:
-            logger.error(f"[JWT Verify] 黑名单校验失败: {e}")
-            raise JWTValidationError(f"校验 Token 黑名单状态异常: {e}")
-        
-        # 可选校验: typ 令牌类型字段
-        if payload.get("typ") not in {"access", "refresh"}:
-            raise JWTValidationError("Token typ 字段非法")
-        
-        # 写入缓存(仅限生产环境)
-        if not self.is_dev:
-            try:
-                self.redis.set(payload_cache_key, json.dumps(payload), ex=60, nx=True)
-            except Exception as e:
-                logger.warning(f"[JWT Verify] 缓存写入失败: {e}")
-            
-        return payload
-    
-    # 单例
-    @classmethod
-    def get_instance(cls) -> "AzureRS256Verifier":
+            raise JWTValidationError(f"Blacklist check failed: {e}") from e
+
+    def _read_payload_cache(self, key: str) -> Optional[Dict[str, Any]]:
         """
-        获取全局单例实例
-        - 避免频繁初始化 Azure 和 Redis 客户端
-        - 可直接用于需要JWT验证的模块
+        读取 payload 缓存。
+        - 成功返回 dict
+        - 异常或脏数据返回 None（不中断主流程）
+        """
+        try:
+            cached_raw = self.redis.get(key)
+            if not cached_raw:
+                return None
+
+            if isinstance(cached_raw, str):
+                payload_json = cached_raw
+            elif isinstance(cached_raw, (bytes, memoryview)):
+                payload_json = bytes(cached_raw).decode("utf-8")
+            else:
+                raise TypeError(f"Unexpected payload cache type: {type(cached_raw)}")
+
+            payload = json.loads(payload_json)
+            if not isinstance(payload, dict):
+                raise TypeError("Cached payload is not dict")
+            return cast(Dict[str, Any], payload)
+        except Exception as e:
+            logger.warning("[JWT Verify] read payload cache failed: %s", e)
+            return None
+
+    def _write_payload_cache(self, key: str, payload: Dict[str, Any]) -> None:
+        """
+        payload 短缓存：
+        - TTL = min(token剩余寿命, 60秒)
+        - 至少 1 秒
+        """
+        try:
+            now = int(time.time())
+            exp = int(payload.get("exp", now))
+            ttl = max(min(exp - now, 60), 1)
+            self.redis.set(key, json.dumps(payload, separators=(",", ":")), ex=ttl, nx=True)
+        except Exception as e:
+            logger.warning("[JWT Verify] write payload cache failed: %s", e)
+
+    def verify(self, token: str) -> Dict[str, Any]:
+        """
+        JWT 验证主入口 (ES256):
+
+        流程：
+        1) 校验 token 基本格式并解析 header/payload/signature 三段；
+        2) 校验 header.alg 必须为 ES256；
+        3) 生产环境先尝试 payload 缓存（命中仍执行 claims + 黑名单）；
+        4) 验签（raw->DER，支持公钥刷新重试）；
+        5) 解码 payload 并执行 claims + 黑名单；
+        6) 生产环境写 payload 短缓存。
+        """
+        if not isinstance(token, str) or not token.strip():
+            raise JWTValidationError("Token is empty")
+
+        token = token.strip()
+
+        try:
+            header_b64, payload_b64, signature_b64 = token.split(".")
+        except ValueError as e:
+            raise JWTValidationError(f"JWT format invalid: {e}") from e
+
+        # 解析 header
+        try:
+            header_obj = json.loads(self._b64url_decode(header_b64))
+            if not isinstance(header_obj, dict):
+                raise TypeError("JWT header is not object")
+            header = cast(Dict[str, Any], header_obj)
+        except Exception as e:
+            raise JWTValidationError(f"JWT header decode failed: {e}") from e
+
+        # 强制算法校验，防算法降级
+        alg = str(header.get("alg", "")).upper()
+        if alg != self.ALGORITHM:
+            raise JWTValidationError(f"JWT alg mismatch: expect {self.ALGORITHM}, got {alg}")
+
+        # 可选：typ 检查（若存在则要求 JWT）
+        typ = header.get("typ")
+        if typ is not None and str(typ).upper() != "JWT":
+            raise JWTValidationError("JWT header typ invalid")
+
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        payload_cache_key = f"{self.redis_prefix}payload:{token_hash}"
+
+        # 缓存路径（生产环境）
+        if not self._is_dev:
+            cached_payload = self._read_payload_cache(payload_cache_key)
+            if cached_payload is not None:
+                jti = self._validate_claims(cached_payload)
+                self._ensure_not_blacklisted(jti)
+                return cached_payload
+
+        # 非缓存路径：验签
+        signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+        try:
+            raw_signature = self._b64url_decode(signature_b64)
+        except Exception as e:
+            raise JWTValidationError(f"JWT signature decode failed: {e}") from e
+
+        self._verify_signature_with_rotation(signing_input, raw_signature)
+
+        # 解码 payload
+        try:
+            payload_obj = json.loads(self._b64url_decode(payload_b64))
+            if not isinstance(payload_obj, dict):
+                raise TypeError("JWT payload is not object")
+            payload = cast(Dict[str, Any], payload_obj)
+        except Exception as e:
+            raise JWTValidationError(f"JWT payload decode failed: {e}") from e
+
+        # claims + 黑名单
+        jti = self._validate_claims(payload)
+        self._ensure_not_blacklisted(jti)
+
+        # 写短缓存
+        if not self._is_dev:
+            self._write_payload_cache(payload_cache_key, payload)
+
+        return payload
+
+    @classmethod
+    def get_instance(cls) -> "AzureES256Verifier":
+        """
+        单例入口。
+        避免频繁创建 Azure / Redis 客户端。
         """
         if cls._instance is None:
             cls._instance = cls(
-                vault_url = settings.AZURE_VAULT_URL,
-                key_name = settings.JWT_KEY,
+                vault_url=settings.AZURE_VAULT_URL,
+                key_name=settings.JWT_KEY,
             )
-        return cast(AzureRS256Verifier, cls._instance)
+        return cls._instance

@@ -1,150 +1,114 @@
 """
-JWT 鉴权认证模块: 自定义 DRF 认证器（Redis-only 状态校验）
+JWT 鉴权认证模块(DRF Authentication)
 
-职责：
-- 从 Authorization Header 中解析 Bearer Token
-- 使用 Azure Key Vault RS256 公钥验签
-- 校验 access token 基本 claims（typ / jti / sub）
-- 基于 Redis 用户状态事实源进行实时校验
-- 不查询数据库（高性能、低耦合）
-- 校验通过后向 request 注入认证上下文
+模块定位：
+1. 解析 Authorization Header 中的 Bearer Token
+2. 调用 ES256 verifier 做 JWT 技术校验（签名、标准 claims、黑名单等）
+3. 基于 Redis 用户状态事实源做实时鉴权校验（不查 DB）：
+   - is_active / is_deleted
+   - payload.sv 与 redis.sess_ver 一致性
+4. 校验通过后向 request 注入上下文，供后续业务层直接使用
 
-=== 关键设计原则 ===
-- JWT 认证阶段不访问数据库
-- 用户是否“允许访问”完全由 Redis 事实源决定
-- Redis 状态缺失视为不可信，直接拒绝（安全优先）
-- 业务异常统一使用 AppException
-- 本模块仅做“认证适配”，不承载业务语义
-
-=== request 上下文约定 ===
-认证成功后注入：
-- request.user_id     : int
-- request.user_state  : dict
-- request.jwt_payload : dict
-- request.jwt_token   : str
-
-注：
-- request.user 为 AuthenticatedUser（轻量对象，不查 DB）
-- 业务/权限判断应基于 request.user_id / request.user_state
+设计原则：
+- 高性能：认证主链路 Redis-only
+- 安全优先：状态缺失/异常即拒绝（fail-closed）
+- 边界清晰：业务错误统一使用 AppException，再映射为 DRF 协议异常
 """
 from __future__ import annotations
 import re
 from dataclasses import dataclass
-from typing import Optional, Tuple, Any, Dict, cast
-
+from typing import Any, Dict, NoReturn, Optional, Tuple, cast
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
-
-from openai_chat.settings.utils.logging import get_logger
-from openai_chat.settings.utils.exceptions import AppException
 from openai_chat.settings.utils.error_codes import ErrorCodes
-
-from .jwt_verifier import AzureRS256Verifier
+from openai_chat.settings.utils.exceptions import AppException
+from openai_chat.settings.utils.logging import get_logger
 from users.services.auth.state_guards import UserStateGuard
-# Redis-only 用户状态校验:
-# - 校验 is_active / is_deleted
-# - Redis 缺失即拒绝
-# - 不回源 DB
+from .jwt_verifier import AzureES256Verifier, JWTValidationError
 
-logger = get_logger("project.jwt")
+logger = get_logger("project.jwt.auth")
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class AuthenticatedUser:
     """
-    轻量"已认证用户"对象(Redis-only 场景专用)
-    - 不查询DB
+    轻量认证用户对象(不查DB)
+    
+    说明:
+    - 仅保存 user_id，满足 DRF 对 request.user.is_authenticated 的语义需求
+    - 业务层若需要完整用户信息，应在业务流程中按需查询，而非在认证阶段查询
     """
     id: int
+    
     @property
     def is_authenticated(self) -> bool:
         return True
 
 class JWTAuthentication(BaseAuthentication):
     """
-    自定义 JWT 认证器(DRF适配)
-    - access token 验签 + payload 校验
-    - Redis-only 用户状态事实源校验
-    - 不查询数据库DB
+    自定义 JWT 认证器(DRF 适配层)
+    
+    返回约定:
+    - 无 Bearer Token：返回 None (让 DRF 继续其他认证器或进入匿名权限判断)
+    - 有 Bearer Token 且认证成功：返回 (AuthenticatedUser, token)
+    - 认证失败：抛 AuthenticationFailed / PermissionDenied
     """
     _bearer_re = re.compile(r"^Bearer\s+(.+)$", re.IGNORECASE)
     
-    def authenticate(self, request) -> Optional[Tuple[Any, str]]:
+    def authenticate(self, request: Any) -> Optional[Tuple[Any, str]]:
         """
-        DRF 认证入口:
-        - Header 无 Bearer token: 返回 None
-        - Bearer token 存在: 验签 + 校验 + 写入 request 上下文
+        DRF 认证入口
         """
-        auth_header = request.headers.get("Authorization", "")
-        match = self._bearer_re.match(auth_header)
-        if not match:
-            return None
-        
-        token = match.group(1).strip()
-        if not token:
+        token = self._extract_bearer_token(request)
+        if token is None:
             return None
         
         try:
-            # 1.验签并获取 payload(AzureRS256Verifier 内部已处理签名/过期黑名单等)
-            verifier = AzureRS256Verifier.get_instance()
+            # 1. JWT技术校验(验签、exp/iat/nbf、黑名单等)
+            verifier = AzureES256Verifier.get_instance()
             payload = cast(Dict[str, Any], verifier.verify(token))
             
-            # 2.强制校验 token 类型: 仅允许 access
-            if payload.get("typ") != "access":
-                raise AppException.unauthorized(
-                    code=ErrorCodes.AUTH_INVALID_TOKEN,
-                    message="认证失败",
-                )
+            # 2. access token 基本字段校验(typ/jti/sub/sv)
+            uid, token_sv = self._validate_access_payload(payload)
             
-            # 3.校验 jti: 要求存在(黑名单逻辑通常在 verifier 内做, 这里仅做字段完整性检查)
-            jti = payload.get("jti")
-            # 4.从 payload 提取 sub(用户ID)
-            sub = payload.get("sub")
-            if not jti or sub is None:
-                raise AppException.unauthorized(
-                    code=ErrorCodes.AUTH_INVALID_TOKEN,
-                    message="认证失败",
-                )
-            
-            # 5.sub类型校验(必须为 int 可解析)
-            try:
-                uid = int(sub)
-            except Exception:
-                raise AppException.unauthorized(
-                    code=ErrorCodes.AUTH_INVALID_TOKEN,
-                    message="认证失败",
-                )
-            
-            # 6.Redis-only 用户状态校验(缺失/禁用/注销: 直接拒绝访问)
-            user_state = UserStateGuard.ensure_user_state_allowed(uid, stage="jwt_auth")
-            
-            # 7.写入 request 上下文(供后续权限/业务层使用)
-            request.user_id = uid # 当前请求的用户ID
-            request.user_state = user_state # Redis 用户状态事实源
-            request.jwt_payload = payload # JWT原始载荷
-            request.jwt_token = token # access token原文
-            
-            # 8. 返回轻量已认证用户
-            return AuthenticatedUser(uid), token
-        
-        except AppException as e:
-            # 统一日志出口
-            logger.warning(
-                "[JWTAuth] reject code=%s message=%s",
-                getattr(e, "code", None),
-                getattr(e, "message", None),
+            # 3. Redis-only 用户状态 + 会话版本实时校验
+            user_state = UserStateGuard.ensure_user_state_and_sv_allowed(
+                user_id=uid,
+                token_sv=token_sv,
+                stage="jwt_auth",
             )
             
-            # 协议层转换
-            self._raise_drf_auth_exception(e)
+            # 4. 注入 request 上下文(供后续权限与业务层复用)
+            self._inject_request_context(
+                request=request,
+                uid=uid,
+                payload=payload,
+                token=token,
+                user_state=user_state,
+            )
             
+            return AuthenticatedUser(id=uid), token
+        
+        except AppException as exc:
+            # 业务异常统一映射到 DRF 401/403
+            logger.warning(
+                "[JWTAuth] reject by AppException code=%s message=%s",
+                getattr(exc, "code", None),
+                getattr(exc, "message", None),
+            )
+            self._raise_drf_auth_exception(exc)
+        
+        except JWTValidationError as exc:
+            # verifier 的技术异常：统一按认证失败处理
+            logger.warning("[JWTAuth] reject by JWTValidationError err=%s", exc)
             raise AuthenticationFailed(
                 detail={
-                    "code": ErrorCodes.AUTH_FAILED,
-                    "message": "认证失败"
+                    "code": ErrorCodes.AUTH_INVALID_TOKEN,
+                    "message": "认证失败",
                 }
             )
         
         except Exception:
+            # 防止内部异常细节泄露
             logger.exception("[JWTAuth] unexpected system error")
             raise AuthenticationFailed(
                 detail={
@@ -153,16 +117,110 @@ class JWTAuthentication(BaseAuthentication):
                 }
             )
     
+    def _extract_bearer_token(self, request: Any) -> Optional[str]:
+        """
+        从请求头提取 Bearer Token
+        
+        兼容行为:
+        - Header 缺失、格式不符、token 为空字符串 -> 返回 None
+        """
+        auth_header = str(request.headers.get("Authorization", ""))
+        match = self._bearer_re.match(auth_header)
+        if not match:
+            return None
+        
+        token = match.group(1).strip()
+        return token or None
     
     @staticmethod
-    def _raise_drf_auth_exception(e: AppException) -> None:
+    def _parse_positive_int(raw: Any, *, field_name: str) -> int:
         """
-        将 AppException 转换为 DRF 可识别的认证异常
-        """
-        code = getattr(e, "code", ErrorCodes.AUTH_FAILED)
-        message = getattr(e, "message", "认证失败")
+        将输入解析为正整数(>=1)
         
-        # 账户状态类错误 -> 403
+        该方法显式处理 None/bool，避免静态类型检查器对 int(None) 报错
+        同时保证 sub/sv 等字段在认证层严格收敛
+        """
+        if raw is None:
+            raise ValueError(f"{field_name} is None")
+        if isinstance(raw, bool):
+            raise ValueError(f"{field_name} is bool")
+        
+        value = int(raw)
+        if value < 1:
+            raise ValueError(f"{field_name} < 1")
+        return value
+    
+    def _validate_access_payload(self, payload: Dict[str, Any]) -> Tuple[int, int]:
+        """
+        校验 access token 关键字段, 并返回 (uid, token_sv)
+        
+        必要字段:
+        - typ == "access"
+        - jti 非空字符串
+        - sub 可解析为 >=1 的 int
+        - sv 可解析为 >=1 的 int
+        """
+        typ = str(payload.get("typ", "")).strip().lower()
+        if typ != "access":
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_TOKEN,
+                message="认证失败",
+            )
+        
+        jti = payload.get("jti")
+        if not isinstance(jti, str) or not jti.strip():
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_TOKEN,
+                message="认证失败",
+            )
+        
+        try:
+            uid = self._parse_positive_int(payload.get("sub"), field_name="sub")
+        except Exception:
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_TOKEN,
+                message="认证失败",
+            )
+        
+        try:
+            token_sv = self._parse_positive_int(payload.get("sv"), field_name="sv")
+        except Exception:
+            raise AppException.unauthorized(
+                code=ErrorCodes.AUTH_INVALID_TOKEN,
+                message="登录状态已失效，请重新登录",
+            )
+        
+        return uid, token_sv
+    
+    @staticmethod
+    def _inject_request_context(
+        *,
+        request: Any,
+        uid: int,
+        payload: Dict[str, Any],
+        token: str,
+        user_state: Dict[str, Any],
+    ) -> None:
+        """
+        向 request 注入认证上下文，避免后续重复解析 token
+        """
+        request.user_id = uid
+        request.user_state = user_state
+        request.jwt_payload = payload
+        request.jwt_token = token
+    
+    @staticmethod
+    def _raise_drf_auth_exception(exc: AppException) -> NoReturn:
+        """
+        将 AppException 映射到 DRF 层异常
+
+        规则：
+        - 账号状态类错误 -> 403
+        - 其他认证类错误 -> 401
+        """
+        code = getattr(exc, "code", ErrorCodes.AUTH_FAILED)
+        message = getattr(exc, "message", "认证失败")
+        
         if code in {
             ErrorCodes.ACCOUNT_DISABLED,
             ErrorCodes.ACCOUNT_DELETED,
@@ -170,5 +228,4 @@ class JWTAuthentication(BaseAuthentication):
         }:
             raise PermissionDenied(detail={"code": code, "message": message})
         
-        # 其余一律视为认证失败 -> 401
-        raise AuthenticationFailed(detail={"code": code, "message": "认证失败"})
+        raise AuthenticationFailed(detail={"code": code, "message": message})

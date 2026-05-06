@@ -1,68 +1,178 @@
-# JWT 黑名单模块: 检查/加入黑名单, 基于Redis缓存机制
+"""
+JWT 黑名单模块(Redis 实现)
+
+设计目标:
+- 1.负责JWT黑名单存储与查询
+- 2.不负责 JWT 验签、不负责 HTTP 返回、不抛业务层 AppException
+- 3.对外暴露纯技术接口（bool 返回），由上层 service/auth 决定如何映射业务语义
+"""
+from __future__ import annotations
 import time
-from openai_chat.settings.utils.locks import build_lock # redlock分布式锁封装
-from openai_chat.settings.utils.redis import get_redis_client
-from openai_chat.settings.base import REDIS_DB_JWT_BLACKLIST # JWT黑名单模块Redis存储占用库
+from typing import Optional
+
+from openai_chat.settings.base import REDIS_DB_JWT_BLACKLIST
 from openai_chat.settings.utils.logging import get_logger
+from openai_chat.settings.utils.redis import get_redis_client
 
-logger = get_logger("project.jwt")
+logger = get_logger("project.jwt.blacklist")
 
-# Redis key 前缀
-BLACKLIST_PREFIX = "jwt:blacklist"
+# Redis Key 前缀
+JWT_BLACKLIST_PREFIX = "jwt:blacklist:"
 
-def get_blacklist_key(jti: str) -> str:
+# 当 token 仍有极短有效期时, 至少保留1秒, 保证撤销落库语义一致
+MIN_TTL_SECONDS = 1
+
+def _redis():
     """
-    构建Redis中用于存储黑名单Token的key
-    :param jti: JWT ID
-    :return: Redis key
+    获取黑名单专用 Redis 客户端
+    
+    说明:
+    - 通过统一封装 get_redis_client 获取连接；
+    - DB 使用 REDIS_DB_JWT_BLACKLIST，避免与其他模块混用
     """
-    return f"{BLACKLIST_PREFIX}{jti}"
+    return get_redis_client(db=REDIS_DB_JWT_BLACKLIST)
+
+def build_blacklist_key(jti: str) -> str:
+    """
+    生成黑名单 Redis Key
+    
+    参数:
+    - jti: JWT ID（唯一标识）
+    
+    返回:
+    - 形如 jwt:blacklist:<jti> 的 key
+    """
+    return f"{JWT_BLACKLIST_PREFIX}{jti}"
+
+def _normalize_jti(jti: object) -> Optional[str]:
+    """
+    归一化并校验 jti 输入
+    """
+    if not isinstance(jti, str):
+        return None
+    
+    normalize = jti.strip()
+    if not normalize:
+        return None
+    
+    return normalize
+
+def _ttl_from_exp(exp_timestamp: int | float, now_ts: Optional[int] = None) -> int:
+    """
+    根据 exp(unix 时间戳-秒)计算黑名单 TTL (秒)
+    
+    参数:
+    - ttl = exp - now
+    - ttl <= 0：表示 token 已过期
+    - ttl > 0：至少返回 1 秒
+    """
+    now = int(now_ts if now_ts is not None else time.time())
+    ttl = int(exp_timestamp) - now
+    return max(ttl, 0) # 过期的 token 也加入黑名单, 但 TTL 设置为 0, 表示立即过期
 
 def is_blacklisted(jti: str) -> bool:
     """
-    检查Token是否已被加入黑名单
-    :param jti: Token的唯一标识(jti)
-    :return: 是否在黑名单中
+    查询 token 是否在黑名单中
+    
+    返回:
+    - True: 在黑名单, 或查询异常(fail-closed)
+    - False: 不在黑名单中
+    
+    fail-closed说明:
+    - 任何查询异常都视为 token 在黑名单中, 保证安全性
     """
+    normalized_jti = _normalize_jti(jti)
+    if not normalized_jti:
+        # 输入无效的 jti 视为黑名单, 保证安全性
+        logger.warning("[JWT Blacklist] invalid jti input in is_blacklisted: %r", jti)
+        return True
+    
+    key = build_blacklist_key(normalized_jti)
     try:
-        redis = get_redis_client(db=REDIS_DB_JWT_BLACKLIST)
-        result = redis.get(get_blacklist_key(jti))
-        return result is not None
-    except Exception as e:
-        logger.error(f"[JWT黑名单]检查异常 jti={jti}, error={str(e)}")
+        value = _redis().get(key)
+        return value is not None
+    except Exception as exc:
+        # fail-closed: 依赖故障时默认拒绝放行
+        logger.error(
+            "[JWT Blacklist] check failed (fail-closed). jti=%s key=%s err=%s",
+            normalized_jti,
+            key,
+            exc,
+        )
+        return True
+
+def add_to_blacklist(jti: str, exp_timestamp: int | float) -> bool:
+    """
+    讲 token (jti) 假如黑名单, TTL 跟随 token 剩余有效期
+    
+    参数:
+    - jti: token 唯一标识
+    - exp_timestamp: token 的 exp(Unix 时间戳，秒)
+    
+    返回：
+    - True: 写入成功 / 已存在 / token 已过期(视为无需再撤销)
+    - False: 输入非法或 Redis 写入异常
+    
+    幂等性：
+    - 使用 SET key value EX ttl NX (原子)
+    - 若 key 已存在，说明之前已撤销，直接返回 True
+    """
+    normalized_jti = _normalize_jti(jti)
+    if not normalized_jti:
+        logger.warning("[JWT Blacklist] add failed: invalid jti=%r", jti)
         return False
     
-def add_to_blacklist(jti: str, exp_timestamp: int) -> bool:
-    """
-    添加 JWT Token 至 Redis 黑名单, 设置过期时间为exp对应的时间戳
-    :param jti: JWT 唯一标识符
-    :param exp_timestamp: Token过期时间戳(秒)
-    :return: 是否成功加入黑名单
-    """
+    if not isinstance(exp_timestamp, (int, float)):
+        logger.error(
+            "[JWT Blacklist] add failed: invalid exp type. jti=%s exp=%r",
+            normalized_jti,
+            exp_timestamp,
+        )
+        return False
+    
+    ttl = _ttl_from_exp(exp_timestamp)
+    
+    # token 已过期: 从业务语义看无需撤销, 按成功处理
+    if ttl <= 0:
+        logger.info(
+            "[JWT Blacklist] skip add because token already expired. jti=%s exp=%s",
+            normalized_jti,
+            int(exp_timestamp),
+        )
+        return True
+    
+    ttl = max(ttl, MIN_TTL_SECONDS)
+    key = build_blacklist_key(normalized_jti)
+    
     try:
-        if not isinstance(exp_timestamp, (int, float)) or exp_timestamp <= 0:
-            logger.error(f"[黑名单写入失败] 非法的 exp 时间戳: jti={jti}, exp={exp_timestamp}")
-            return False
+        # SET key value EX ttl NX:
+        # - NX：仅当 key 不存在时写入（幂等）
+        # - EX：自动过期，生命周期与 token 对齐
+        result = _redis().set(name=key, value="1", ex=ttl, nx=True)
         
-        ttl = max(int(exp_timestamp - time.time()), 1) # 剩余有效期(秒)
-        if ttl <= 0:
-            logger.warning(f"[黑名单跳过] token已过期, jti={jti}, ttl={ttl}")
-            return False
-        
-        redis = get_redis_client(db=REDIS_DB_JWT_BLACKLIST)
-        lock_key = f"lock:jwt:blacklist:{jti}"
-        lock = build_lock(lock_key, ttl=3000, strategy='safe') # Redlock分布式锁
-        
-        with lock:
-            redis_key = get_blacklist_key(jti)
-            if redis.get(redis_key):
-                logger.debug(f"[黑名单已存在] jti={jti}")
-                return True
-            
-            redis.set(name=redis_key, value="1", ex=ttl, nx=True) # nx=True 保障幂等性
-            logger.info(f"[黑名单写入成功] jti={jti}, ttl={ttl}s")
+        if result:
+            logger.info(
+                "[JWT Blacklist] added. jti=%s key=%s ttl=%ss",
+                normalized_jti,
+                key,
+                ttl,
+            )
             return True
         
-    except Exception as e:
-        logger.error(f"[黑名单写入失败 jti={jti}, error={str(e)}]")
+        # result=False 代表 key 已存在, 按幂等成功处理
+        logger.debug(
+            "[JWT Blacklist] already exists (idempotent success). jti=%s key=%s",
+            normalized_jti,
+            key,
+        )
+        return True
+    
+    except Exception as exc:
+        logger.error(
+            "[JWT Blacklist] add failed. jti=%s key=%s ttl=%s err=%s",
+            normalized_jti,
+            key,
+            ttl,
+            exc,
+        )
         return False

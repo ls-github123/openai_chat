@@ -117,11 +117,15 @@ class ConfirmRegisterService:
         """
         将"请求身份"绑定到幂等key:
         - email
+        - verify_code_hash
         注: 任何变化都将视为不同请求
         """
-        # 使用 token_hex 作为 register_token, 替代验证码
-        payload = f"{self.email}|{secrets.token_hex(16)}"
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        payload = {
+            "email": self.email,
+            "verify_code_hash": self._hash_verify_code(self.verify_code),
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
     
     # 读取与解析 prereg 缓存
     def _load_prereg_info(self) -> Optional[Dict[str, Any]]:
@@ -245,7 +249,7 @@ class ConfirmRegisterService:
         # build_lock.ttl 单位: 毫秒
         lock_ttl_ms = int(self.LOCK_TTL_SECONDS * 1000)
         
-        with build_lock(key=lock_key, ttl=lock_ttl_ms, strategy=self.LOCK_STRATEGY) as acquired:
+        with build_lock(key=lock_key, ttl=lock_ttl_ms, strategy=self.LOCK_STRATEGY).lock() as acquired:
             if not acquired:
                 # 未拿到锁: 同邮箱正在被其他并发请求处理
                 raise AppException.bad_request(

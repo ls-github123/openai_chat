@@ -1,149 +1,211 @@
 """
-Azure Key Vault JWT签名工具模块(RSA)
-- 使用Azure Key Vault 的 Key 服务对 JWT 进行 RS256 非对称签名
-- 私钥始终保存在Azure Key Vault服务器中, 调用 Azure HSM 完成签名操作
-- 使用Redis缓存 + 分布式锁 + 公钥验证
-- 分布式锁机制(RedLock), 防止并发重复签名
-- 用于用户登录模块中 生产 + 验证 access token
+ES256 JWT 签名器(Azure Key Vault - ES256)
+1. 使用 EC P-256 私钥
+2. JWT(JWS) 的 ES256 签名要求 raw(64字节, r||s)，所以要 DER -> raw 转换。
 """
-import base64 # 用于JWT编码
-import json # 序列化 header 和 payload
-import hashlib # 计算摘要
-from typing import Dict, cast
-from azure.identity import DefaultAzureCredential # Azure 身份验证
-from azure.keyvault.keys import KeyClient # Key Vault 中获取密钥对象
-from azure.keyvault.keys.crypto import CryptographyClient, SignatureAlgorithm # 签名操作模块
-from openai_chat.settings.utils.redis import get_redis_client # Redis 连接封装
-from openai_chat.settings.utils.locks import build_lock # 分布式锁获取接口
-from openai_chat.settings.base import REDIS_DB_JWT_CACHE # JWT签名Redis 缓存库db编号
-from openai_chat.settings.utils.logging import get_logger # 导入日志记录器接口
+from __future__ import annotations
 
-logger = get_logger("project.jwt.singer")
+import base64
+import hashlib
+import json
+from typing import Any, Mapping, cast
 
-class AzureRS256Signer:
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.keys import KeyClient
+from azure.keyvault.keys.crypto import CryptographyClient, SignatureAlgorithm
+from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
+from django.conf import settings
+
+from openai_chat.settings.base import REDIS_DB_JWT_CACHE
+from openai_chat.settings.utils.locks import build_lock
+from openai_chat.settings.utils.logging import get_logger
+from openai_chat.settings.utils.redis import get_redis_client
+
+logger = get_logger("project.jwt.signer")
+
+
+class AzureES256Signer:
     """
-    Azure Key Vault 签名器: 用于生成 RS256 JWT
-    - 1.接收 header 和 payload
-    - 2.构造 base64url 签名输入
-    - 3.使用 Azure Key Vault 完成签名(SHA256摘要 + RSA私钥)
-    - 4.使用 Redis 做缓存, 避免重复签名
-    - 5.使用 RedLock 做并发锁控制
+    基于 Azure Key Vault 的 ES256 JWT 签名器（单例）。
+
+    关键约束：
+    - 仅支持 ES256（P-256 曲线）。
+    - header["alg"] 必须为 "ES256"。
     """
-    DEFAULT_TTL = 30 # 默认签名缓存时间(秒)
-    DEFAULT_LOCK_TTL_MS = 1000 # 默认分布式锁持有时间(毫秒)
-    
-    def __init__(self, vault_url: str, key_name: str, redis_prefix: str = "jwt:sign:"):
-        """
-        初始化签名器
-        :param key_id: Azure Key Vault 中的完整密钥URL(含Vault名称+Key名称)
-        :param key_name: 密钥名称(key名)
-        :param redis_prefix: Redis 缓存的键前缀, 默认 'jwt:sign:'
-        """
+
+    # 签名缓存默认 TTL（秒）
+    DEFAULT_TTL = 30
+    # 分布式锁默认过期（毫秒）
+    DEFAULT_LOCK_TTL_MS = 1000
+
+    _instance = None
+
+    def __init__(self, vault_url: str, key_name: str, redis_prefix: str = "jwt:sign:") -> None:
+        # 初始化 Azure Key Vault 客户端与加密客户端
         self.credential = DefaultAzureCredential()
         self.key_client = KeyClient(vault_url=vault_url, credential=self.credential)
-        self.key = self.key_client.get_key(name=key_name) # 获取密钥对象
+        self.key = self.key_client.get_key(name=key_name)
         self.crypto_client = CryptographyClient(key=self.key, credential=self.credential)
+
+        # 初始化 Redis（用于签名结果缓存）
         self.redis = get_redis_client(db=REDIS_DB_JWT_CACHE)
         self.prefix = redis_prefix
-        logger.info(f"[JWT-Signer Init] 初始化 JWT 签名器, Vault: {vault_url}, key: {key_name}")
-    
+
+        logger.info("[JWT-Signer Init] initialized ES256 signer, key=%s", key_name)
+
     @staticmethod
-    def base64url_encode(data: bytes) -> str:
+    def _b64url_encode(data: bytes) -> str:
         """
-        执行 base64url 编码(用于 JWT 中)
-        - 无 '=' 补齐
-        - URL 安全字符集
+        进行 JWT 需要的 base64url 编码（去掉 '=' padding）。
         """
-        return base64.urlsafe_b64encode(data).rstrip(b'=').decode()
-    
-    def _generate_cache_key(self, header: Dict, payload: Dict) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+    @staticmethod
+    def _normalize_positive_int(value: int | None, default: int, field_name: str) -> int:
         """
-        生成唯一缓存 key: 基于 header+payload 的JSON内容计算 SHA256哈希
-        :return: Redis 中使用的缓存 key
+        将可空整数参数规范化为正整数，避免 None/0/负数导致行为异常。
+
+        - value 为 None 时使用 default
+        - value 非法（<=0）时抛出 ValueError
         """
-        raw = json.dumps({"h": header, "p":payload}, sort_keys=True)
-        sha256_hash = hashlib.sha256(raw.encode()).hexdigest()
-        return f"{self.prefix}{sha256_hash}"
-    
-    def sign(self, header: Dict, payload: Dict, ttl: int = 30, lock_ttl_ms: int = 1000) -> str:
+        final_value = default if value is None else int(value)
+        if final_value <= 0:
+            raise ValueError(f"{field_name} must be a positive integer, got {final_value}")
+        return final_value
+
+    @staticmethod
+    def _der_to_jws_raw(der_sig: bytes, part_len: int = 32) -> bytes:
         """
-        执行 JWT RS256 签名流程(缓存 + 锁)
-        :param header: JWT Header(如 {"alg": "RS256", "typ": "JWT"})
-        :param payload: JWT payload(如 sub, iat, exp, iss等)
-        :param ttl: 签名结果缓存时间(秒)
-        :param lock_ttl_ms: 分布式锁持有时间(毫秒)
-        :return: 最终生成的 JWT 字符串(header.payload.signature)
+        将 ECDSA DER 签名转换为 JWT 规范所需的 raw 签名（r||s）。
+
+        参数：
+        - der_sig: Azure Key Vault 返回的 DER 编码签名
+        - part_len: 单个分量长度（ES256 对应 32 字节）
+
+        返回：
+        - 64 字节 raw 签名：r(32) + s(32)
         """
-        ttl = ttl or self.DEFAULT_TTL
-        lock_ttl_ms = lock_ttl_ms or self.DEFAULT_LOCK_TTL_MS
-        
-        if header.get("alg") != "RS256":
-            raise ValueError("仅支持 RS256 签名算法")
-        
-        # 构造缓存 key
+        r, s = asym_utils.decode_dss_signature(der_sig)
+        r_bytes = int(r).to_bytes(part_len, byteorder="big")
+        s_bytes = int(s).to_bytes(part_len, byteorder="big")
+        return r_bytes + s_bytes
+
+    def _generate_cache_key(self, header: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+        """
+        基于 header + payload 的稳定 JSON 生成缓存 key。
+
+        说明：
+        - 使用 sort_keys + 固定 separators 确保序列化稳定；
+        - 使用 sha256 摘要避免超长 key。
+        """
+        raw = json.dumps({"h": header, "p": payload}, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return f"{self.prefix}{digest}"
+
+    def sign(
+        self,
+        header: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        ttl: int | None = None,
+        lock_ttl_ms: int | None = None,
+    ) -> str:
+        """
+        生成 ES256 JWT 字符串（header.payload.signature）。
+
+        流程：
+        1. 参数校验与归一化；
+        2. 首次读取缓存（命中直接返回）；
+        3. 获取分布式锁后再次读缓存（双重检查）；
+        4. 组装 signing_input；
+        5. SHA-256 摘要 -> Key Vault ES256 签名（DER）；
+        6. DER -> raw -> base64url；
+        7. 写入缓存并返回 token。
+        """
+        final_ttl = self._normalize_positive_int(ttl, self.DEFAULT_TTL, "ttl")
+        final_lock_ttl_ms = self._normalize_positive_int(
+            lock_ttl_ms, self.DEFAULT_LOCK_TTL_MS, "lock_ttl_ms"
+        )
+
+        if header.get("alg") != "ES256":
+            raise ValueError("Only ES256 is supported by AzureES256Signer")
+
         cache_key = self._generate_cache_key(header, payload)
-        
+        lock_key = f"{cache_key}:lock"
+
+        # 1) 先查缓存：减少 Key Vault 调用
         try:
-            # 尝试从Redis 获取签名结果
-            cached_token = self.redis.get(cache_key)
-            if cached_token:
-                logger.info(f"[JWT Cache Hit] 命中缓存 key:{cache_key}")
-                return cached_token.decode("utf-8") if isinstance(cached_token, bytes) else str(cached_token)
-        except Exception as e:
-            logger.warning(f"[Redis Read Error] 获取缓存失败:{cache_key}, 错误:{e}")
-        
-        # 使用 RedLock 加锁, 防止高并发重复签名
-        with build_lock(cache_key, ttl=lock_ttl_ms, strategy='safe'):
+            cached = self.redis.get(cache_key)
+            if cached:
+                return cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+        except Exception as exc:
+            logger.warning("[JWT Sign] read cache failed key=%s err=%s", cache_key, exc)
+
+        # 2) 加锁：避免并发下重复签名
+        with build_lock(lock_key, ttl=final_lock_ttl_ms, strategy="safe"):
+            # 2.1) 双重检查缓存
             try:
-                # Double check(防止并发竞争)
-                cached_token = self.redis.get(cache_key)
-                if cached_token:
-                    return cached_token.decode("utf-8") if isinstance(cached_token, bytes) else str(cached_token)
-                
-                # 编码 header 和 payload(base64url)
-                encoded_header = self.base64url_encode(json.dumps(header, separators=(',', ':')).encode())
-                encoded_payload = self.base64url_encode(json.dumps(payload, separators=(',', ':')).encode())
-                
-                # 拼接为bytes, 不引发类型错误
-                signing_input = ".".join([encoded_header, encoded_payload]).encode("utf-8")
-                
-                digest = hashlib.sha256(signing_input).digest()
-                # 使用 Azure Key Vault 执行签名(RS256)
-                sign_result = self.crypto_client.sign(SignatureAlgorithm.rs256, digest)
-                encoded_signature = self.base64url_encode(sign_result.signature)
-                
-                # 组装最终 JWT
-                jwt_token = f"{encoded_header}.{encoded_payload}.{encoded_signature}"
-                
-                # 写入结果到Redis缓存(注:转换为字符串)
-                try:
-                    self.redis.setex(cache_key, ttl, jwt_token)
-                except Exception as e:
-                    logger.error(f"[Redis Write Error] JWT 写入缓存失败: {e}")
-                
-                logger.debug(f"[JWT Sign] 生成JWT: {jwt_token}")
-                return jwt_token # 返回最终的完整JWT令牌
-            
-            except Exception as e:
-                logger.error(f"[JWT Sign Error]签名失败, key={cache_key}, 错误: {e}")
-                raise RuntimeError(f"[JWT Sign Error] 签名过程异常: {e}")
-            
-    # === 类方法: 单例懒加载 ===
-    _instance = None
-    
+                cached = self.redis.get(cache_key)
+                if cached:
+                    return cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+            except Exception:
+                # 加锁后再次读缓存失败，不影响继续签名
+                pass
+
+            # 3) 组装 header/payload 的 base64url 字符串
+            encoded_header = self._b64url_encode(
+                json.dumps(dict(header), sort_keys=True, separators=(",", ":")).encode("utf-8")
+            )
+            encoded_payload = self._b64url_encode(
+                json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+            )
+            signing_input = f"{encoded_header}.{encoded_payload}".encode("utf-8")
+
+            # 4) ES256：先对 signing_input 做 SHA-256，再交给 Key Vault 进行签名
+            digest = hashlib.sha256(signing_input).digest()
+            sign_result = self.crypto_client.sign(SignatureAlgorithm.es256, digest)
+
+            # 5) DER -> raw(64字节) -> base64url
+            raw_sig = self._der_to_jws_raw(sign_result.signature, part_len=32)
+            encoded_sig = self._b64url_encode(raw_sig)
+
+            token = f"{encoded_header}.{encoded_payload}.{encoded_sig}"
+
+            # 6) 写入缓存（失败不阻塞主流程）
+            try:
+                self.redis.setex(cache_key, final_ttl, token)
+            except Exception as exc:
+                logger.warning("[JWT Sign] write cache failed key=%s err=%s", cache_key, exc)
+
+            logger.info(
+                "[JWT Sign] token generated jti=%s typ=%s sub=%s",
+                payload.get("jti"),
+                payload.get("typ"),
+                payload.get("sub"),
+            )
+            return token
+
     @classmethod
-    def get_instance(cls) -> "AzureRS256Signer":
+    def _read_vault_settings(cls) -> tuple[str, str]:
         """
-        获取全局单例实例
+        读取并校验 ES256 签名所需配置
+        """
+        vault_url = getattr(settings, "AZURE_VAULT_URL", None)
+        key_name = getattr(settings, "JWT_KEY", None)
+
+        if not vault_url or not key_name:
+            raise RuntimeError("Missing required settings: AZURE_VAULT_URL and JWT_KEY")
+
+        return str(vault_url), str(key_name)
+
+    @classmethod
+    def get_instance(cls) -> "AzureES256Signer":
+        """
+        获取签名器单例实例。
         """
         if cls._instance is None:
-            try:
-                from django.conf import settings
-                cls._instance = cls(
-                    vault_url = settings.AZURE_VAULT_URL,
-                    key_name = settings.JWT_KEY,
-                )
-            except Exception as e:
-                logger.critical(f"[JWT Sign Init Error] 初始化失败: {e}")
-                raise
-        return cast(AzureRS256Signer, cls._instance)
+            vault_url, key_name = cls._read_vault_settings()
+            cls._instance = cls(
+                vault_url=vault_url,
+                key_name=key_name,
+            )
+        return cast(AzureES256Signer, cls._instance)

@@ -12,7 +12,7 @@ Key 规范：
 - SUCCEEDED：业务已成功完成，缓存 result（用于重复请求复用）
 - FAILED：业务失败（短 TTL），允许后续重试
 """
-import json, time
+import json, time, uuid
 from dataclasses import dataclass # 用数据类表达 lua 返回的结构化结果
 from typing import Any, Callable, Dict, Optional, Tuple # 类型注解
 from openai_chat.settings.utils.redis import get_redis_client # 获取redis客户端
@@ -67,6 +67,7 @@ local key = KEYS[1]
 local pending_value = ARGV[1]
 local ttl = tonumber(ARGV[2])
 local req_fp = ARGV[3] or ""
+local retry_failed_as_new = ARGV[4] or "0"
 
 if (not ttl) or (ttl <= 0) then
   ttl = 600
@@ -112,10 +113,57 @@ if state == "SUCCEEDED" then
 elseif state == "PENDING" then
   return {"PENDING", ""}
 elseif state == "FAILED" then
+  if retry_failed_as_new == "1" then
+    redis.call("SET", key, pending_value, "EX", ttl)
+    return {"NEW", ""}
+  end
   return {"FAILED", ""}
 else
   return {"CONFLICT", ""}
 end
+"""
+
+    _LUA_FINISH = r"""
+local key = KEYS[1]
+local finish_value = ARGV[1]
+local ttl = tonumber(ARGV[2])
+local req_fp = ARGV[3] or ""
+local owner = ARGV[4] or ""
+
+if (not ttl) or (ttl <= 0) then
+  ttl = 600
+end
+
+local v = redis.call("GET", key)
+if not v then
+  return {"MISSING", ""}
+end
+
+local decode_ok, obj = pcall(cjson.decode, v)
+if not decode_ok or (type(obj) ~= "table") or (not obj["state"]) then
+  return {"CONFLICT", ""}
+end
+
+if obj["state"] ~= "PENDING" then
+  return {"CONFLICT", tostring(obj["state"])}
+end
+
+if owner ~= "" then
+  local stored_owner = obj["owner"]
+  if (stored_owner == nil) or (tostring(stored_owner) ~= tostring(owner)) then
+    return {"CONFLICT", "owner"}
+  end
+end
+
+if req_fp ~= "" then
+  local stored_fp = obj["fp"]
+  if (stored_fp == nil) or (tostring(stored_fp) ~= tostring(req_fp)) then
+    return {"CONFLICT", "fp"}
+  end
+end
+
+redis.call("SET", key, finish_value, "EX", ttl)
+return {"OK", ""}
 """
     
     def __init__(self) -> None:
@@ -124,6 +172,7 @@ end
         
         # 预加载 Lua 脚本到 Redis(服务启动后首次使用会完成脚本加载)
         self._begin_script = self._redis.register_script(self._LUA_BEGIN)
+        self._finish_script = self._redis.register_script(self._LUA_FINISH)
         
     def _build_key(self, scope: str, idem_key: str) -> str:
         return f"{self.KEY_PREFIX}:{scope}:{idem_key}"
@@ -135,6 +184,8 @@ end
         idem_key: str,
         ttl_seconds: int,
         request_fingerprint: Optional[str] = None,
+        retry_failed_as_new: bool = False,
+        owner_token: Optional[str] = None,
     ) -> IdemReadResult:
         """
         开始幂等: 原子判重 + 占位
@@ -147,6 +198,7 @@ end
         now = int(time.time())
         
         fp = (request_fingerprint or "").strip()
+        owner = (owner_token or "").strip()
         
         pending_payload: Dict[str, Any] = {
            "state": "PENDING",
@@ -154,6 +206,8 @@ end
         }
         if fp:
           pending_payload["fp"] = fp
+        if owner:
+          pending_payload["owner"] = owner
         
         try:
             ret = self._begin_script(
@@ -162,6 +216,7 @@ end
                   json.dumps(pending_payload, ensure_ascii=False),
                   str(ttl_seconds),
                   fp, # 传递给 Lua 校验
+                  "1" if retry_failed_as_new else "0",
               ],
             )
         except Exception as e:
@@ -191,6 +246,40 @@ end
         
         # 理论兜底
         raise IdempotencyKeyConflictError(f"unknown idempotency action: {action}")
+
+    def _finish(
+        self,
+        *,
+        redis_key: str,
+        payload: Dict[str, Any],
+        ttl_seconds: int,
+        request_fingerprint: Optional[str] = None,
+        owner_token: Optional[str] = None,
+    ) -> None:
+        fp = (request_fingerprint or "").strip()
+        owner = (owner_token or "").strip()
+
+        ret = self._finish_script(
+            keys=[redis_key],
+            args=[
+                json.dumps(payload, ensure_ascii=False),
+                str(ttl_seconds),
+                fp,
+                owner,
+            ],
+        )
+
+        if not isinstance(ret, (list, tuple)) or len(ret) < 1:
+            logger.error("[IdempotencyExecutor]Unexpected finish lua return. key=%s ret=%r", redis_key, ret)
+            raise IdempotencyKeyConflictError("invalid idempotency finish lua return")
+
+        raw_action = ret[0]
+        action = raw_action.decode() if isinstance(raw_action, (bytes, bytearray)) else str(raw_action)
+        if action == "OK":
+            return
+
+        logger.warning("[IdempotencyExecutor]finish rejected. key=%s ret=%r", redis_key, ret)
+        raise IdempotencyKeyConflictError(f"idempotency finish rejected: {redis_key}")
     
     def succeed(
         self,
@@ -199,6 +288,7 @@ end
         result: Dict[str, Any],
         ttl_seconds: int,
         request_fingerprint: Optional[str] = None,
+        owner_token: Optional[str] = None,
     ) -> None:
         """
         标记成功, 并缓存 result
@@ -213,8 +303,17 @@ end
         fp = (request_fingerprint or "").strip()
         if fp:
           payload["fp"] = fp
+        owner = (owner_token or "").strip()
+        if owner:
+          payload["owner"] = owner
         
-        self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=ttl_seconds)
+        self._finish(
+            redis_key=redis_key,
+            payload=payload,
+            ttl_seconds=ttl_seconds,
+            request_fingerprint=request_fingerprint,
+            owner_token=owner_token,
+        )
         
     def fail(
         self,
@@ -222,6 +321,7 @@ end
         idem_key: str,
         error: Optional[Dict[str, Any]] = None,
         request_fingerprint: Optional[str] = None,
+        owner_token: Optional[str] = None,
     ) -> None:
         """
         标记失败(短TTL), 允许后续重试
@@ -239,8 +339,17 @@ end
         fp = (request_fingerprint or "").strip()
         if fp:
           payload["fp"] = fp
+        owner = (owner_token or "").strip()
+        if owner:
+          payload["owner"] = owner
         
-        self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=self.FAILED_TTL_SECONDS)
+        self._finish(
+            redis_key=redis_key,
+            payload=payload,
+            ttl_seconds=self.FAILED_TTL_SECONDS,
+            request_fingerprint=request_fingerprint,
+            owner_token=owner_token,
+        )
     
     def execute(
       self,
@@ -266,8 +375,17 @@ end
           
           if ttl_seconds <= 0:
               ttl_seconds = self.DEFAULT_TTL_SECONDS
+
+          owner_token = uuid.uuid4().hex
           
-          read = self.begin(scope=scope, idem_key=idem_key, ttl_seconds=ttl_seconds, request_fingerprint=request_fingerprint)
+          read = self.begin(
+              scope=scope,
+              idem_key=idem_key,
+              ttl_seconds=ttl_seconds,
+              request_fingerprint=request_fingerprint,
+              retry_failed_as_new=allow_retry_after_failed,
+              owner_token=owner_token,
+          )
           
           if read.action == "DONE":
               if read.cached_result_json:
@@ -291,9 +409,25 @@ end
                   raise TypeError("idempotency func() must return dict")
           except Exception as e:
               # 业务异常: 写 FAILED, 允许后续重试(短TTL)
-              self.fail(scope=scope, idem_key=idem_key, error={"code": "BUSINESS_ERROR"}, request_fingerprint=request_fingerprint)
+              try:
+                  self.fail(
+                      scope=scope,
+                      idem_key=idem_key,
+                      error={"code": "BUSINESS_ERROR"},
+                      request_fingerprint=request_fingerprint,
+                      owner_token=owner_token,
+                  )
+              except Exception:
+                  logger.exception("[IdempotencyExecutor]Idempotency fail commit failed. scope=%s key=%s", scope, idem_key)
               raise
           
           # 成功: 写 SUCCEEDED 并缓存结果
-          self.succeed(scope=scope, idem_key=idem_key, result=result, ttl_seconds=ttl_seconds, request_fingerprint=request_fingerprint)
+          self.succeed(
+              scope=scope,
+              idem_key=idem_key,
+              result=result,
+              ttl_seconds=ttl_seconds,
+              request_fingerprint=request_fingerprint,
+              owner_token=owner_token,
+          )
           return result

@@ -164,11 +164,12 @@ class UserInfoService:
         :param user_id: 用户ID(来自 token, 允许 int/str)
         :return: 用户信息字典, 若用户不存在则返回 {}
         """
-        if not user_id:
-            logger.warning("[UserInfoService] user_id为空")
+        uid = UserInfoService._normalize_user_id(user_id)
+        if not uid:
+            logger.warning("[UserInfoService] user_id非法或为空")
             return {} # 空ID直接返回空对象
         
-        cache_key = UserInfoService._build_cache_key(user_id) # 构建缓存key
+        cache_key = UserInfoService._build_cache_key(uid) # 构建缓存key
         redis_client = get_redis_client(db=REDIS_DB_USERS_INFO_CACHE) # 获取Redis客户端
         
         cached = UserInfoService._get_from_cache(redis_client, cache_key) # 读取缓存
@@ -177,19 +178,19 @@ class UserInfoService:
             return cached # 命中缓存(包含负缓存)
         
         try:
-            user = User.objects.filter(id=user_id, is_active=True, is_deleted=False).first() # 查询数据库
+            user = User.objects.filter(id=uid, is_active=True, is_deleted=False).first() # 查询数据库
             if not user:
-                logger.info(f"[UserInfoService] 用户不存在或未启用 user_id={user_id}")
+                logger.info(f"[UserInfoService] 用户不存在或未启用 user_id={uid}")
                 UserInfoService._set_negative_cache(redis_client, cache_key) # 写入负缓存
                 return {} # 用户不存在或未启用
             
             user_info = UserInfoService._serialize_user(user) # 序列化用户信息
             UserInfoService._set_to_cache(redis_client, cache_key, user_info) # 写入正向缓存
-            logger.debug(f"[UserInfoService] 用户信息缓存更新成功 user_id={user_id}")
+            logger.debug(f"[UserInfoService] 用户信息缓存更新成功 user_id={uid}")
             return user_info
         
         except Exception as e:
-            logger.error(f"[UserInfoService] 查询数据库失败 user_id={user_id}, err={e}")
+            logger.error(f"[UserInfoService] 查询数据库失败 user_id={uid}, err={e}")
             return {} # 查询失败返回空对象
     
     @staticmethod

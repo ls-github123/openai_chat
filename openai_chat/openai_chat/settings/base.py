@@ -20,7 +20,7 @@ BASE_DIR = path_utils.BASE_DIR # 项目根路径
 
 # === Azure Key Vault 配置 ===
 AZURE_VAULT_URL = get_config("AZURE_VAULT_URL", default="https://openai-chat-key.vault.azure.net/")
-JWT_KEY = get_config("JWT_RSA_SECRET_KEY_NAME", default="JWT-RSA_SECRET-KEY")
+JWT_KEY = get_config("JWT_ECS_SECRET_KEY_NAME", default="JWT-ECS-SIGNING-KEY")
 
 
 # 安全配置
@@ -82,7 +82,7 @@ REST_FRAMEWORK = {
 # === JWT 模块配置 ===
 # JWT认证配置
 SIMPLE_JWT = {
-    "ALGORITHM": "RS256", # 非对称加密算法
+    "ALGORITHM": "ES256", # 椭圆曲线算法
     "SIGNING_KEY": None, # 不使用本地私钥, 改为外部公钥验证
     "VERIFYING_KEY": None, # 公钥验证由自定义验证器(verifier)完成
     "AUTH_HEADER_TYPES": ("Bearer",), # Token前缀
@@ -90,6 +90,7 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "sub", # JWT payload 中用户身份识别字段(sub)
     "TOKEN_TYPE_CLAIM": "typ", # 标记 token 类型(如 access/refresh)
     "JTI_CLAIM": "jti", # JWT ID, 唯一标识, 用于 token 黑名单或撤销机制
+    # 项目主鉴权链路走自定义 JWTAuthentication + 自定义 verifier
     "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",), # 指定解析的 Token 类型
     "TOKEN_USER_CLASS": "users.models.User", # 自定义用户模型路径
 }
@@ -99,7 +100,7 @@ JWT_ISSUER = "openai-chat.xyz" # JWT 签发方标识
 JWT_AUDIENCE = "openai_chat_user" # JWT接收方标识
 JWT_SCOPE_DEFAULT = "user" # 默认权限范围
 # JWT 令牌生命周期配置
-JWT_ACCESS_TOKEN_LIFETIME = 60 * 60 # Access Token默认有效期(60分钟)
+JWT_ACCESS_TOKEN_LIFETIME = 15 * 60 # Access Token默认有效期(15分钟)
 JWT_REFRESH_TOKEN_LIFETIME = 60 * 60 * 24 * 7 # Refresh Token默认有效期(7天)
 
 

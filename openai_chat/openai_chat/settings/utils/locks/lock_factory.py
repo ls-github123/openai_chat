@@ -48,5 +48,5 @@ def build_lock(key: str, ttl: int = 10000, strategy: str = "safe") -> BaseLock:
     
     client = get_lock_redis_client()
     
-    expire_seconds = max(1, ttl // 1000)
+    expire_seconds = max(1, (ttl + 999) // 1000)
     return RedisSingleLock(client, key, expire=expire_seconds)

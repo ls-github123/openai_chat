@@ -41,6 +41,16 @@ def get_totp_lock_key(user_id: str) -> str:
     """
     return f"lock:totp:{user_id}"
 
+def _to_str(raw) -> str:
+    """
+    Redis 默认 decode_responses=False，读取值可能是 bytes。
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        return raw.decode("utf-8", errors="ignore")
+    return str(raw)
+
 # Redis 限流操作
 def check_totp_fail_limit(user_id: str, max_attempts: int = TOTP_FAIL_LIMIT) -> bool:
     """
@@ -53,7 +63,7 @@ def check_totp_fail_limit(user_id: str, max_attempts: int = TOTP_FAIL_LIMIT) -> 
     key = get_totp_fail_key(user_id)
     try:
         raw = redis.get(key)
-        count = int(str(raw)) if raw else 0
+        count = int(_to_str(raw)) if raw else 0
         return count >= max_attempts
     except Exception as e:
         logger.error(f"[TOTP限流] 获取失败次数异常: {e}")
@@ -128,7 +138,7 @@ def init_totp(user: User) -> dict:
         cache_raw = redis.get(qr_key)
         if cache_raw:
             try:
-                cache_data = json.loads(str(cache_raw))
+                cache_data = json.loads(_to_str(cache_raw))
                 return {"qrcode": cache_data["qrcode"]}
             except Exception as e:
                 logger.warning(f"[TOTP启用] 解析缓存内容异常: {e}")
@@ -175,7 +185,7 @@ def verify_and_bind_totp(user: User, token: str) -> bool:
         return False
     
     try:
-        totp_data = json.loads(str(cache_raw))
+        totp_data = json.loads(_to_str(cache_raw))
         totp_secret = totp_data.get("secret")
         if not totp_secret:
             logger.error(f"[TOTP验证] TOTP缓存中缺少 secret 字段")

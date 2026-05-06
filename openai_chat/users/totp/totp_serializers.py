@@ -48,22 +48,30 @@ class TOTPVerifySerializer(serializers.Serializer):
         return attrs
 
 
-# === 账户登录二次验证 TOTP 序列化器 ===
 class TOTPLoginVerifySerializer(serializers.Serializer):
     """
-    用户绑定TOTP, 登录账户二次验证TOTP序列化器:
-    - 校验当前用户是否已绑定 TOTP
-    - 验证用户提交的6位验证码格式
-    - 使用数据库中对应 totp_secret 进行动态口令验证
+    登录阶段二 TOTP 序列化器:
+    - challenge_id: 登录阶段一返回的预登录挑战ID
+    - totp_code: 用户提交的6位动态验证码
     """
-    token = serializers.CharField(
+    challenge_id = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+        max_length=128,
+        help_text=_("登录阶段一返回的challenge_id"),
+        label=_("登录挑战ID"),
+    )
+    totp_code = serializers.CharField(
         max_length=6,
         required=True,
+        allow_blank=False,
+        trim_whitespace=True,
         help_text=_("6位动态验证码"),
         label=_("验证码")
     )
     
-    def validate_token(self, value: str) -> str:
+    def validate_totp_code(self, value: str) -> str:
         """
         字段级别验证:
         - 格式必须为6位纯数字
