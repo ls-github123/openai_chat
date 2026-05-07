@@ -64,7 +64,7 @@ class LoginService:
         data = cast(Dict[str, Any], self.serializer.validated_data)
         
         email_raw = str(data.get("email", "")).strip()
-        password = str(data.get("password", "")).strip()
+        password = str(data.get("password", ""))
         
         # 防御式校验: 空值/长度(对外统一错误)
         if not email_raw or not password:

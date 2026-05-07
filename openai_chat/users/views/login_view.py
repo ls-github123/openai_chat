@@ -7,6 +7,7 @@ from rest_framework import status
 from openai_chat.settings.utils.logging import get_logger
 from openai_chat.settings.utils.response_wrapper import json_response # 统一五段式响应封装
 from openai_chat.settings.utils.error_codes import ErrorCodes # 错误码常量表
+from openai_chat.settings.utils.request_utils import get_client_ip
 
 from users.services.login_service import LoginService # 登录服务类(阶段一)
 
@@ -36,7 +37,7 @@ class LoginPreView(APIView):
         """
         result: Dict[str, Any] = LoginService(
             data=request.data,
-            ip="",
+            ip=get_client_ip(request),
             user_agent=request.headers.get("User-Agent", ""),
         ).execute()
         

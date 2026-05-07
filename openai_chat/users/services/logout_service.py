@@ -96,8 +96,22 @@ class LogoutService:
         - 失败: 返回 None(按幂等退出处理)
         """
         try:
-            payload: Mapping[str, Any] = self._verifier.verify(token)
+            payload: Mapping[str, Any] = self._verifier.verify(token, check_blacklist=False)
+            actual_type = str(payload.get("typ", "")).strip().lower()
+            if actual_type != token_type:
+                raise AppException.bad_request(
+                    code=ErrorCodes.COMMON_INVALID_PARAMS,
+                    message=f"{token_type}_token 类型不匹配",
+                )
+            logger.info(
+                "[LogoutService] token verified for logout token_type=%s sub=%s jti=%s",
+                token_type,
+                payload.get("sub"),
+                payload.get("jti"),
+            )
             return payload
+        except AppException:
+            raise
         except Exception as e:
             logger.info("[LogoutService] verify failed: token_type=%s, err=%s", token_type, e)
             return None
@@ -132,7 +146,7 @@ class LogoutService:
                 message=f"{token_type}_token 缺少必要字段(jti/exp/sub)",
             )
         
-        if not isinstance(exp, int):
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)):
             raise AppException.bad_request(
                 code=ErrorCodes.COMMON_INVALID_PARAMS,
                 message=f"{token_type}_token 的 exp 字段类型非法",

@@ -1,7 +1,8 @@
 """
 ES256 JWT 签名器(Azure Key Vault - ES256)
 1. 使用 EC P-256 私钥
-2. JWT(JWS) 的 ES256 签名要求 raw(64字节, r||s)，所以要 DER -> raw 转换。
+2. JWT(JWS) 的 ES256 签名要求 raw(64字节, r||s)
+3. Azure Key Vault ES256 通常直接返回 raw 签名；本模块兼容 DER 返回
 """
 from __future__ import annotations
 
@@ -26,11 +27,11 @@ logger = get_logger("project.jwt.signer")
 
 class AzureES256Signer:
     """
-    基于 Azure Key Vault 的 ES256 JWT 签名器（单例）。
+    基于 Azure Key Vault 的 ES256 JWT 签名器（单例）
 
     关键约束：
-    - 仅支持 ES256（P-256 曲线）。
-    - header["alg"] 必须为 "ES256"。
+    - 仅支持 ES256（P-256 曲线）
+    - header["alg"] 必须为 "ES256"
     """
 
     # 签名缓存默认 TTL（秒）
@@ -74,18 +75,18 @@ class AzureES256Signer:
         return final_value
 
     @staticmethod
-    def _der_to_jws_raw(der_sig: bytes, part_len: int = 32) -> bytes:
+    def _signature_to_jws_raw(signature: bytes, part_len: int = 32) -> bytes:
         """
-        将 ECDSA DER 签名转换为 JWT 规范所需的 raw 签名（r||s）。
+        将 ECDSA 签名转换为 JWT 规范所需的 raw 签名（r||s）。
 
-        参数：
-        - der_sig: Azure Key Vault 返回的 DER 编码签名
-        - part_len: 单个分量长度（ES256 对应 32 字节）
-
-        返回：
-        - 64 字节 raw 签名：r(32) + s(32)
+        Azure Key Vault ES256 签名结果通常已经是 raw(64字节)。
+        为兼容其他实现或 SDK 行为，这里也接受 DER 编码签名。
         """
-        r, s = asym_utils.decode_dss_signature(der_sig)
+        raw_len = part_len * 2
+        if len(signature) == raw_len:
+            return signature
+
+        r, s = asym_utils.decode_dss_signature(signature)
         r_bytes = int(r).to_bytes(part_len, byteorder="big")
         s_bytes = int(s).to_bytes(part_len, byteorder="big")
         return r_bytes + s_bytes
@@ -117,8 +118,8 @@ class AzureES256Signer:
         2. 首次读取缓存（命中直接返回）；
         3. 获取分布式锁后再次读缓存（双重检查）；
         4. 组装 signing_input；
-        5. SHA-256 摘要 -> Key Vault ES256 签名（DER）；
-        6. DER -> raw -> base64url；
+        5. SHA-256 摘要 -> Key Vault ES256 签名；
+        6. 签名 -> raw -> base64url；
         7. 写入缓存并返回 token。
         """
         final_ttl = self._normalize_positive_int(ttl, self.DEFAULT_TTL, "ttl")
@@ -164,8 +165,8 @@ class AzureES256Signer:
             digest = hashlib.sha256(signing_input).digest()
             sign_result = self.crypto_client.sign(SignatureAlgorithm.es256, digest)
 
-            # 5) DER -> raw(64字节) -> base64url
-            raw_sig = self._der_to_jws_raw(sign_result.signature, part_len=32)
+            # 5) raw/DER -> raw(64字节) -> base64url
+            raw_sig = self._signature_to_jws_raw(sign_result.signature, part_len=32)
             encoded_sig = self._b64url_encode(raw_sig)
 
             token = f"{encoded_header}.{encoded_payload}.{encoded_sig}"

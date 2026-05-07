@@ -50,6 +50,15 @@ class RegisterPreSerializer(serializers.Serializer):
         allow_blank=True,
         max_length=4096,
     )
+
+    def validate_email(self, value: str) -> str:
+        """
+        规范化 email，保证预注册缓存 key 与注册确认/登录保持一致。
+        """
+        email = (value or "").strip().lower()
+        if not email:
+            raise serializers.ValidationError("邮箱不能为空")
+        return email
     
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         """

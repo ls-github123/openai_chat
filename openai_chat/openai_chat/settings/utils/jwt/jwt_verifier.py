@@ -158,11 +158,14 @@ class AzureES256Verifier:
             
             # 回源 Azure Key Vault
             key_bundle = self.key_client.get_key(name=self.key_name)
-            x_raw = getattr(key_bundle, "x", None)
-            y_raw = getattr(key_bundle, "y", None)
+            jwk = getattr(key_bundle, "key", None)
+            x_raw = getattr(jwk, "x", None)
+            y_raw = getattr(jwk, "y", None)
+            curve = str(getattr(jwk, "crv", "") or "")
+            key_type = str(getattr(jwk, "kty", "") or "")
             
             if x_raw is None or y_raw is None:
-                raise JWTValidationError("Azure EC key missing x/y")
+                raise JWTValidationError(f"Azure EC key missing x/y, kty={key_type}, crv={curve}")
             
             public_numbers = ec.EllipticCurvePublicNumbers(
                 x=self._raw_to_int(x_raw),
@@ -344,17 +347,21 @@ class AzureES256Verifier:
         except Exception as e:
             logger.warning("[JWT Verify] write payload cache failed: %s", e)
 
-    def verify(self, token: str) -> Dict[str, Any]:
+    def verify(self, token: str, *, check_blacklist: bool = True) -> Dict[str, Any]:
         """
         JWT 验证主入口 (ES256):
 
         流程：
         1) 校验 token 基本格式并解析 header/payload/signature 三段；
         2) 校验 header.alg 必须为 ES256；
-        3) 生产环境先尝试 payload 缓存（命中仍执行 claims + 黑名单）；
+        3) 生产环境先尝试 payload 缓存（命中仍执行 claims，默认执行黑名单）；
         4) 验签（raw->DER，支持公钥刷新重试）；
-        5) 解码 payload 并执行 claims + 黑名单；
+        5) 解码 payload 并执行 claims，默认执行黑名单；
         6) 生产环境写 payload 短缓存。
+
+        参数:
+        - check_blacklist: 默认 True。logout 等撤销场景需要先解析已拉黑 token 的
+          jti/exp，因此可以关闭黑名单检查，但仍保留签名和 claims 校验。
         """
         if not isinstance(token, str) or not token.strip():
             raise JWTValidationError("Token is empty")
@@ -393,7 +400,8 @@ class AzureES256Verifier:
             cached_payload = self._read_payload_cache(payload_cache_key)
             if cached_payload is not None:
                 jti = self._validate_claims(cached_payload)
-                self._ensure_not_blacklisted(jti)
+                if check_blacklist:
+                    self._ensure_not_blacklisted(jti)
                 return cached_payload
 
         # 非缓存路径：验签
@@ -416,7 +424,8 @@ class AzureES256Verifier:
 
         # claims + 黑名单
         jti = self._validate_claims(payload)
-        self._ensure_not_blacklisted(jti)
+        if check_blacklist:
+            self._ensure_not_blacklisted(jti)
 
         # 写短缓存
         if not self._is_dev:
