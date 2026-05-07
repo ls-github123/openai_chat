@@ -15,9 +15,10 @@ class TokenRefreshView(APIView):
     """
     用户令牌刷新视图
     - 接收 refresh token 字符串
-    - 调用 TokenRefreshService 完成校验、黑名单加入及新令牌签发
-    - 返回新 access_token 与 refresh_token
+    - 调用 TokenRefreshService 完成校验并签发新的 access token
+    - refresh token 保持不变，不随刷新接口返回
     """
+    authentication_classes: list[Any] = []
     permission_classes = [AllowAny] # 允许未认证用户调用(无需 access token)
     
     def post(self, request):

@@ -9,10 +9,13 @@ class TokenRefreshSerializer(serializers.Serializer):
     """
     refresh = serializers.CharField(
         required=True, # 必须提供 refresh 字段
+        max_length=4096,
+        trim_whitespace=True,
         help_text="原 refresh token", # 用于DRF自动文档
         error_messages={ # 自定义错误提示信息
             "blank": "refresh token 不能为空",
-            "required": "请提供 refresh token"
+            "required": "请提供 refresh token",
+            "max_length": "refresh token 格式非法",
         }
     )
     

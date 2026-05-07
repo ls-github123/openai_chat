@@ -6,9 +6,9 @@ JWT Token 服务模块（ES256）
    - 负责签发 access + refresh
    - 将 sess_ver 写入 payload.sv（用于全局会话失效）
 2. TokenRefreshService
-   - 负责 refresh token 校验与轮换（rotation）
+   - 负责 refresh token 校验
    - 校验用户状态事实源（Redis）与 sv 一致性
-   - 拉黑旧 refresh 后签发新 access + refresh
+   - refresh token 保持不变，仅签发新 access
 3. TokenRevoker
    - 统一封装 token 拉黑逻辑（按 jti + exp）
 
@@ -85,65 +85,6 @@ def _normalize_sub_to_uid(payload: Mapping[str, Any]) -> int:
         ) from exc
 
     return uid
-
-
-def _normalize_jti(payload: Mapping[str, Any]) -> str:
-    """
-    从 payload 提取并校验 jti。
-    """
-    raw = payload.get("jti")
-    jti = str(raw).strip() if raw is not None else ""
-    if not jti:
-        raise AppException.unauthorized(
-            code=ErrorCodes.AUTH_INVALID_TOKEN,
-            message="Refresh Token 缺少 jti",
-        )
-    return jti
-
-
-def _normalize_exp(payload: Mapping[str, Any]) -> int:
-    """
-    从 payload 提取并校验 exp（Unix 秒级时间戳）。
-
-    注意：
-    - 先排除 None，再 int(...)，避免类型检查器对 int(None) 报错；
-    - bool 是 int 子类，但不应被视为合法 exp，因此显式拒绝。
-    """
-    raw_exp: Any = payload.get("exp")
-
-    if raw_exp is None:
-        raise AppException.unauthorized(
-            code=ErrorCodes.AUTH_INVALID_TOKEN,
-            message="Refresh Token 缺少 exp",
-        )
-
-    if isinstance(raw_exp, bool):
-        raise AppException.unauthorized(
-            code=ErrorCodes.AUTH_INVALID_TOKEN,
-            message="Refresh Token 的 exp 非法",
-        )
-
-    if not isinstance(raw_exp, (int, float, str, bytes, bytearray)):
-        raise AppException.unauthorized(
-            code=ErrorCodes.AUTH_INVALID_TOKEN,
-            message="Refresh Token 的 exp 类型非法",
-        )
-
-    try:
-        exp_int = int(raw_exp)
-    except (TypeError, ValueError) as exc:
-        raise AppException.unauthorized(
-            code=ErrorCodes.AUTH_INVALID_TOKEN,
-            message="Refresh Token 的 exp 非法",
-        ) from exc
-
-    if exp_int <= 0:
-        raise AppException.unauthorized(
-            code=ErrorCodes.AUTH_INVALID_TOKEN,
-            message="Refresh Token 的 exp 非法",
-        )
-
-    return exp_int
 
 
 def _normalize_sv(payload: Mapping[str, Any]) -> int:
@@ -274,24 +215,84 @@ class TokenIssuerService:
                 message="令牌签发失败，请稍后重试",
             ) from exc
 
+    def issue_access_token(self, *, sess_ver: Optional[int] = None) -> Dict[Literal["access"], str]:
+        """
+        仅签发新的 access token。
+        """
+        try:
+            user_id = str(self.user.id).strip()
+            if not user_id:
+                raise AppException.internal_error(
+                    code=ErrorCodes.SYSTEM_INTERNAL_ERROR,
+                    message="用户标识异常，无法签发令牌",
+                )
+
+            access_scope = str(get_scope_for_user(self.user))
+            final_sess_ver = (
+                int(sess_ver)
+                if sess_ver is not None
+                else int(UserStateService.get_sess_ver(int(self.user.id)))
+            )
+            access_lifetime = _cfg_int("JWT_ACCESS_TOKEN_LIFETIME", 15 * 60)
+
+            access_payload = build_jwt_payload(
+                user_id=user_id,
+                token_type="access",
+                scope=access_scope,
+                lifetime=access_lifetime,
+                sess_ver=final_sess_ver,
+                amr=self._build_amr(),
+            )
+            access_token = self.signer.sign(HEADER, access_payload)
+
+            logger.info(
+                "[TokenIssuerService] issue access ok user_id=%s scope=%s sv=%s",
+                user_id,
+                access_scope,
+                final_sess_ver,
+            )
+
+            return {"access": access_token}
+
+        except AppException:
+            raise
+        except Exception as exc:
+            logger.error("[TokenIssuerService] issue access failed user_id=%s err=%r", self.user.id, exc)
+            raise AppException.internal_error(
+                code=ErrorCodes.SYSTEM_INTERNAL_ERROR,
+                message="令牌签发失败，请稍后重试",
+            ) from exc
+
 
 class TokenRefreshService:
     """
-    Refresh Token 刷新服务（轮换模式）。
+    Refresh Token 刷新服务（固定 refresh 模式）。
 
     流程：
     1. 校验 refresh token（签名 + claims + 黑名单）
     2. 校验 typ=refresh
     3. 校验用户 Redis 状态（禁用/删除）+ 校验 sv 一致性
-    4. 拉黑旧 refresh
-    5. 签发新 access + refresh
+    4. 签发新 access，refresh token 保持不变
     """
+    MAX_TOKEN_LENGTH = 4096
+
     def __init__(self, refresh_token: str):
-        token = str(refresh_token).strip()
+        if not isinstance(refresh_token, str):
+            raise AppException.bad_request(
+                code=ErrorCodes.COMMON_INVALID_PARAMS,
+                message="Refresh Token 格式非法",
+            )
+
+        token = refresh_token.strip()
         if not token:
             raise AppException.bad_request(
                 code=ErrorCodes.AUTH_TOKEN_MISSING,
                 message="Refresh Token 不能为空",
+            )
+        if len(token) > self.MAX_TOKEN_LENGTH:
+            raise AppException.bad_request(
+                code=ErrorCodes.COMMON_INVALID_PARAMS,
+                message="Refresh Token 格式非法",
             )
 
         self.refresh_token = token
@@ -312,7 +313,7 @@ class TokenRefreshService:
 
     def _verify_refresh_payload(self) -> Mapping[str, Any]:
         """
-        调用 verifier 执行技术校验，返回 payload。
+        调用 verifier 执行技术校验，返回 payload
         """
         try:
             payload = cast(Mapping[str, Any], self.verifier.verify(self.refresh_token))
@@ -356,28 +357,6 @@ class TokenRefreshService:
             stage="token_refresh",
         )
 
-    @staticmethod
-    def _revoke_old_refresh(*, user_id: int, jti: str, exp: int) -> None:
-        """
-        拉黑旧 refresh（幂等）。
-
-        注意：
-        - 当前策略是“先撤销旧 refresh，再签发新 token”，属于安全优先。
-        - 若签发阶段失败，用户可能需要重新登录；这是可用性上的取舍，建议在系统文档中明确。
-        """
-        ok = add_to_blacklist(jti=jti, exp_timestamp=exp)
-        if not ok:
-            raise AppException.internal_error(
-                code=ErrorCodes.SYSTEM_INTERNAL_ERROR,
-                message="令牌注销失败，请稍后重试",
-            )
-
-        logger.info(
-            "[TokenRefreshService] old refresh revoked user_id=%s jti=%s",
-            user_id,
-            jti,
-        )
-
     def refresh_tokens(self) -> Dict[str, str]:
         """
         标准刷新入口（推荐新代码使用）。
@@ -385,27 +364,16 @@ class TokenRefreshService:
         payload = self._verify_refresh_payload()
 
         user_id = _normalize_sub_to_uid(payload)
-        jti = _normalize_jti(payload)
-        exp = _normalize_exp(payload)
         token_sv = _normalize_sv(payload)
 
         # Redis 状态校验 + sv 一致性校验（防止禁用用户继续刷新）
         self._ensure_refresh_state_allowed(user_id, token_sv)
 
-        # 用户对象用于后续重新计算 scope 与签发
+        # 用户对象用于后续重新计算 scope 与签发 access
         user = self._get_user(user_id)
+        tokens = TokenIssuerService(user).issue_access_token(sess_ver=token_sv)
 
-        # 旧 refresh 作废（rotation）
-        self._revoke_old_refresh(user_id=user_id, jti=jti, exp=exp)
-
-        # 签发新 access + refresh
-        tokens = TokenIssuerService(user).issue_tokens()
-
-        logger.info(
-            "[TokenRefreshService] refresh ok user_id=%s old_jti=%s",
-            user_id,
-            jti,
-        )
+        logger.info("[TokenRefreshService] refresh access ok user_id=%s", user_id)
 
         return cast(Dict[str, str], tokens)
 
@@ -414,7 +382,7 @@ class TokenRefreshService:
         兼容旧调用方的方法名。
 
         兼容说明：
-        - 旧名称是 refresh_access_token，但实际返回 access+refresh（轮换模式）。
+        - 旧名称是 refresh_access_token，当前语义为仅返回新的 access token。
         """
         return self.refresh_tokens()
 
@@ -425,7 +393,6 @@ class TokenRevoker:
 
     使用场景：
     - logout
-    - refresh 轮换时撤销旧 refresh
     - 管理后台主动失效特定 token（按 jti）
     """
 
