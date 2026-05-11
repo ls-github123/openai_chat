@@ -1,58 +1,77 @@
 # === TOTP 序列化器模块 ===
-# 封装启用和验证动态口令逻辑
-from rest_framework import serializers # DRF 序列化器基类
-from django.utils.translation import gettext_lazy as _ # 国际化支持
-from django.contrib.auth import get_user_model # 获取当前用户模型
-from django.utils.translation import gettext_lazy as _ # 国际化支持(错误信息可翻译)
-from users.totp.totp_utils import verify_totp_token # 导入totp验证函数
+"""
+TOTP serializer 只负责 请求字段格式校验
 
-User = get_user_model() # 获取自定义用户模型类
+边界:
+- 不在 serializer 中校验 TOTP secret 是否存在
+- 不在 serializer 中校验 TOTP 动态码是否正确
+- 不在 serializer 中校验 TOTP 动态码是否正确
+"""
+from __future__ import annotations
+from rest_framework import serializers
+from django.utils.translation import gettext_lazy as _
 
-# === 启用TOTP 接口序列化器(只返回二维码, 无字段校验) ===
 class TOTPEnableSerializer(serializers.Serializer):
     """
-    启用阶段序列化器(校验请求合法性, 无字段输入校验)
-    扩展: 校验请求来源、请求时间、签名等
+    启用 TOTP 初始化接口 serializer
+    
+    当前接口不需要请求体字段
+    - 用户身份来自 access token
+    - service 层根据当前用户生成预绑定二维码
+    
+    保留该 serializer 目的:
+    - 使 view 层保持统一结构
+    - 后续如需加入 password_confirm、device_name、csrf nonce 等字段时可直接扩展
     """
     pass
 
-# === 校验用户输入验证码, 启用TOTP功能 ===
 class TOTPVerifySerializer(serializers.Serializer):
+    """
+    TOTP 绑定确认 / 解绑接口 serializer
+    
+    只校验 token 格式:
+    - 必填
+    - 去除首尾空白
+    - 必须是 6 位纯数字
+    """
     token = serializers.CharField(
-        max_length=6, 
-        required=True, 
-        help_text=_("用户输入的6位验证码"),
-        label=_("验证码")
+        max_length=6,
+        min_length=6,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+        help_text=_("6位动态验证码"),
+        label=_("验证码"),
     )
     
-    def validate_token(self, value):
-        """ 格式校验, 必须为6位数字 """
-        if not value.isdigit():
+    def validate_token(self, value: str) -> str:
+        """
+        字段级格式校验
+        """
+        token = str(value or "").strip()
+        
+        if not token.isdigit():
             raise serializers.ValidationError(_("验证码必须为纯数字"))
-        if len(value) != 6:
-            raise serializers.ValidationError(_("验证码长度必须等于6位"))
-        return value
+        
+        if len(token) != 6:
+            raise serializers.ValidationError(_("验证码必须为6位"))
+        
+        return token
     
-    def validate(self, attrs):
-        user = self.context['request'].user # # 获取当前登录用户对象(从 DRF 的上下文中提取 request)
-        token = attrs.get("token") # 获取用户提交的验证码字段(已通过字段级别校验)
-        
-        # 校验用户是否已经生成 secret
-        if not user.totp_secret:
-            raise serializers.ValidationError(_("当前用户尚未生成 TOTP 密钥"))
-        
-        # 校验验证码是否正确
-        if not verify_totp_token(user.totp_secret, token):
-            raise serializers.ValidationError(_("验证码错误或已过期"))
-        
-        return attrs
-
-
 class TOTPLoginVerifySerializer(serializers.Serializer):
     """
-    登录阶段二 TOTP 序列化器:
-    - challenge_id: 登录阶段一返回的预登录挑战ID
-    - totp_code: 用户提交的6位动态验证码
+    登录阶段二 TOTP serializer
+    
+    字段:
+    - challenge_id:
+      登录阶段一返回的预登录挑战 ID
+    - totp_code:
+      用户提交的 6 位动态验证码
+    
+    边界:
+    - 这里只校验字段格式
+    - challenge_id 是否存在、是否过期、是否匹配用户, 由 LoginTOTPVerifyService 校验
+    - totp_code 是否正确, 由 verify_login_totp() 校验
     """
     challenge_id = serializers.CharField(
         required=True,
@@ -62,22 +81,45 @@ class TOTPLoginVerifySerializer(serializers.Serializer):
         help_text=_("登录阶段一返回的challenge_id"),
         label=_("登录挑战ID"),
     )
+    
     totp_code = serializers.CharField(
         max_length=6,
+        min_length=6,
         required=True,
         allow_blank=False,
         trim_whitespace=True,
         help_text=_("6位动态验证码"),
-        label=_("验证码")
+        label=_("验证码"),
     )
+    
+    def validate_challenge_id(self, value: str) -> str:
+        """
+        challenge_id 基础格式校验
+        
+        注:
+        - 不在 serializer 里查 Redis pending
+        - 只做最基础的空值和长度收敛
+        """
+        challenge_id = str(value or "").strip()
+        
+        if not challenge_id:
+            raise serializers.ValidationError(_("登录挑战ID不能为空"))
+        
+        if len(challenge_id) > 128:
+            raise serializers.ValidationError(_("登陆挑战ID长度非法"))
+        
+        return challenge_id
     
     def validate_totp_code(self, value: str) -> str:
         """
-        字段级别验证:
-        - 格式必须为6位纯数字
+        TOTP 登录验证码格式校验
         """
-        if not value.isdigit():
-            raise serializers.ValidationError(_("验证码必须为数字"))
-        if len(value) != 6:
+        code = str(value or "").strip()
+        
+        if not code.isdigit():
+            raise serializers.ValidationError(_("验证码必须为纯数字"))
+        
+        if len(code) != 6:
             raise serializers.ValidationError(_("验证码必须为6位"))
-        return value
+        
+        return code

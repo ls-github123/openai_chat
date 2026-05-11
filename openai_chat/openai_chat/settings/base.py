@@ -138,6 +138,14 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# === TOTP 二次验证配置 ===
+TOTP_ISSUER_NAME = "OpenAI-Chat" # 显示在认证器APP中的发行方名称
+TOTP_QR_EXPIRE_SECONDS = 300 # TOTP绑定二维码与临时 secret 缓存有效期
+TOTP_FAIL_LIMIT = 5 # 单个失败窗口内最多允许错误次数
+TOTP_FAIL_WINDOW_SECONDS = 300 # TOTP 失败计数窗口(秒)
+TOTP_LOCK_TTL_MS = 5000 # TOTP 绑定/解绑 用户级分布式锁TTL(毫秒)
+TOTP_VALID_WINDOW = 1 # TOTP验证码时间窗口容错范围: 1 表示允许前后各一个时间步长
+
 # === URL 与 WSGI ===
 ROOT_URLCONF = 'openai_chat.urls' # 根URL配置
 WSGI_APPLICATION = 'openai_chat.wsgi.application'
@@ -209,6 +217,7 @@ REDIS_DB_USERS_STATE = 8 # 用户状态事实源占用库
 REDIS_DB_USERS_LOGIN_PENDING = 9 # 用户登录预登录缓存占用库
 REDIS_DB_IDEMPOTENCY = 10 # 接口幂等性占用库
 REDIS_DB_MAIL = 11 # 邮件通道: done/lock/cooldown/rate等
+REDIS_DB_TOTP_FAIL = 12 # TOTP验证码失败计数/限流占用库
 REDIS_DB_DJANGO_CACHE = 14 # DJANGO 框架缓存占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 

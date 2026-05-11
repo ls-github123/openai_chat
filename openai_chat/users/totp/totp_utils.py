@@ -1,11 +1,13 @@
-import pyotp # 生成和验证一次性密码的 Python 库
-import qrcode # 二维码生成库
-from qrcode.image.pil import PilImage # 使用PIL工厂生成图像
-from qrcode.constants import ERROR_CORRECT_M
-from PIL import Image # 图像处理库
-from typing import Optional
 import base64 # Base64 编码工具
 from io import BytesIO # 内存缓存, 用于redis存储
+from typing import Optional
+import pyotp # 生成和验证一次性密码的 Python 库
+import qrcode # 二维码生成库
+from PIL import Image # 图像处理库
+from qrcode.constants import ERROR_CORRECT_M
+from qrcode.image.pil import PilImage # 使用PIL工厂生成图像
+
+from openai_chat.settings.base import TOTP_ISSUER_NAME, TOTP_VALID_WINDOW
 
 # 默认二维码尺寸参数
 DEFAULT_BOX_SIZE = 10
@@ -18,16 +20,17 @@ def generate_totp_secret() -> str:
     """
     return pyotp.random_base32()
 
-def get_totp_uri(secret: str, username: str, issuer_name: str = "OpenAI-Chat") -> str:
+def get_totp_uri(secret: str, username: str, issuer_name: Optional[str] = None) -> str:
     """
     构建 OTP URI, 用于生成二维码识别信息
     示例: otpauth://totp/OpenAI-Chat:user@example.com?secret=XXXX&issuer=OpenAI-Chat
     :param secret: TOTP 密钥
     :param username: 用户标识，一般为邮箱
-    :param issuer_name: 应用名称(显示在 TOTP 应用中)
+    :param issuer_name: 应用名称(显示在 TOTP 应用中), 默认读取 settings.base.TOTP_ISSUER_NAME
     :return: OTP URI 字符串
     """
-    return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer_name)
+    final_issuer = str(issuer_name or TOTP_ISSUER_NAME).strip()
+    return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=final_issuer)
 
 def generate_qr_image(uri: str, box_size: int = DEFAULT_BOX_SIZE, border: int = DEFAULT_BORDER) -> Image.Image:
     """
@@ -54,17 +57,23 @@ def generate_qr_image(uri: str, box_size: int = DEFAULT_BOX_SIZE, border: int = 
 def verify_totp_token(secret: Optional[str], token: Optional[str]) -> bool:
     """
     校验用户提交的 TOTP 动态验证码
-    支持 ±1 时间窗口容错
+    时间窗口容错范围由 settings.base.TOTP_VALID_WINDOW 统一控制
     :param secret: 用户绑定的 TOTP 密钥
     :param token: 用户输入的6位动态验证码
     :return: 校验结果(True-成功, False-失败)
     """
-    if not secret or not token or not token.isdigit() or len(token) != 6:
+    secret_norm = str(secret or "").strip()
+    token_norm = str(token or "").strip()
+    
+    if not secret_norm or not token_norm or not token_norm.isdigit() or len(token_norm) != 6:
         return False # 缺失或非法验证码，直接返回失败
     
     try:
-        totp = pyotp.TOTP(secret) # 创建 TOTP 实例
-        return totp.verify(token, valid_window=1) # 容忍前后时间窗口(避免同步偏差)
+        totp = pyotp.TOTP(secret_norm) # 创建 TOTP 实例
+        return totp.verify(
+            token_norm,
+            valid_window=TOTP_VALID_WINDOW, # 容忍时间窗口由配置控制, 便于生产环境收紧
+        )
     except Exception:
         return False
 

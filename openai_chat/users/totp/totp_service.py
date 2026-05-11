@@ -1,49 +1,111 @@
-# === TOTP 函数化服务模块 ===
+# === TOTP 服务模块 ===
+"""
+TOTP 服务层功能
+
+1.初始化绑定流程:
+   - 生成临时 TOTP secret
+   - 生成认证器 App 可扫描的二维码
+   - 将 secret + qrcode 写入 Redis 预绑定缓存
+   - 注意: 此阶段不写 MySQL, 只有用户输入验证码验证通过后才正式落库
+
+2.验证并绑定:
+   - 从 Redis 读取预绑定 secret
+   - 校验用户提交的 6 位 TOTP 动态码
+   - 校验成功后写入用户表
+   - 启用 TOTP 后提升 sess_ver, 使旧 token 立即失效
+   - 数据库保存和 sess_ver 提升都成功后, 清理 Redis 预绑定缓存、失败计数、用户信息缓存
+
+3.解绑:
+   - 校验当前已绑定 secret 对应的 TOTP 动态码
+   - 校验成功后清空用户表中的 TOTP 字段
+   - 解绑 TOTP 后提升 sess_ver, 使旧 token 立即失效
+   - 数据库保存和 sess_ver 提升成功后, 清理 Redis 缓存
+
+4.登录阶段TOTP校验:
+   - 校验用户已启用 TOTP
+   - 校验动态码
+   - 处理失败计数和限流
+
+设计原则:
+  - Redis key 统一通过函数生成, 避免散落字符串
+  - TOTP 失败计数使用专用 Redis DB, 不污染锁库 db=0
+  - 初始化绑定时加锁后必须二次读取缓存, 避免并发生成不一致二维码
+  - 数据库保存成功后再清理 Redis 缓存, 避免 secret 丢失
+  - 对外仍返回 bool/dict, 兼容现有调用
+"""
+from __future__ import annotations
 import json
-from redis.exceptions import WatchError
-from users.models import User # 自定义用户模型
+from typing import Any, Dict, Optional, TypedDict, cast
+from django.db import transaction
+from redis import Redis
+
+from openai_chat.settings.base import (
+    REDIS_DB_TOTP_FAIL,
+    REDIS_DB_TOTP_QR_CACHE,
+    TOTP_FAIL_LIMIT,
+    TOTP_FAIL_WINDOW_SECONDS,
+    TOTP_ISSUER_NAME,
+    TOTP_LOCK_TTL_MS,
+    TOTP_QR_EXPIRE_SECONDS,
+)
+from openai_chat.settings.utils.locks import build_lock
+from openai_chat.settings.utils.logging import get_logger
+from openai_chat.settings.utils.redis import get_redis_client
+from users.models import User
+from users.services.user_info_service import UserInfoService
+from users.services.user_state_service import UserStateService
 from users.totp.totp_utils import (
+    encode_qr_image_to_base64,
+    generate_qr_image,
     generate_totp_secret,
     get_totp_uri,
-    generate_qr_image,
-    encode_qr_image_to_base64,
-    verify_totp_token
+    verify_totp_token,
 )
-from openai_chat.settings.utils.redis import get_redis_client # Redis客户端封装
-from openai_chat.settings.base import REDIS_DB_TOTP_QR_CACHE # TOTP二维码缓存 Redis 占用库
-from openai_chat.settings.utils.logging import get_logger # 日志记录器
-from openai_chat.settings.utils.locks import build_lock # RedLock分布式锁
 
 logger = get_logger("users.totp")
 
-# 二维码缓存过期时间
-QR_EXPIRE_SECONDS = 300
+class TOTPSetupCache(TypedDict):
+    """
+    Redis 预绑定缓存结构
 
-TOTP_FAIL_LIMIT = 5 # 最多允许失败次数
-TOTP_FAIL_WINDOW = 300 # 失败记录保留时间(秒)
+    qrcode:
+        前端直接渲染用的 base64 PNG 字符串, 不含
+        "data:image/png;base64," 前缀
 
-# Redis Key 工具函数
+    secret:
+        当前预绑定流程生成的 TOTP secret
+        注: 敏感值, 只允许短 TTL 存在 Redis 中, 不应写入日志
+    """
+    qrcode: str
+    secret: str
+
 def get_totp_fail_key(user_id: str) -> str:
     """
-    生成 TOTP 失败计数 Redis Key
+    生成 TOTP 验证失败计数 key
+    
+    - 按 user_id 计数
+    - 绑定、解绑、登录共用一个失败窗口
     """
     return f"totp:fail:{user_id}"
 
 def get_totp_qr_key(user_id: str) -> str:
     """
-    生成 TOTP 二维码 Redis 缓存 key
+    生成 TOTP 预绑定缓存 key
+    - key 保存 qrcode + secret, TTL 较短
     """
-    return f"totp:qrcode:{user_id}"
+    return f"totp:setup:{user_id}"
 
 def get_totp_lock_key(user_id: str) -> str:
     """
-    生成 RedLock 分布式锁 Redis Key
+    生成 TOTP 用户级互斥锁 key
+    - 防止同一用户并发初始化绑定, 生成多个不同 secret
+    - 防止绑定确认、解绑等写操作互相覆盖
     """
     return f"lock:totp:{user_id}"
 
-def _to_str(raw) -> str:
+def _to_str(raw: Any) -> str:
     """
-    Redis 默认 decode_responses=False，读取值可能是 bytes。
+    统一转换 redis bytes为 str, 便于 json.loads/int 处理
     """
     if raw is None:
         return ""
@@ -51,223 +113,396 @@ def _to_str(raw) -> str:
         return raw.decode("utf-8", errors="ignore")
     return str(raw)
 
-# Redis 限流操作
+def _get_qr_redis() -> Redis:
+    """
+    获取 TOTP 预绑定二维码缓存 Redis 客户端
+    """
+    return get_redis_client(db=REDIS_DB_TOTP_QR_CACHE)
+
+def _get_fail_redis() -> Redis:
+    """
+    获取 TOTP 失败计数 Redis 客户端
+    
+    注:
+    - 失败计数不再使用 db=0
+    - db=0 在本项目中是锁相关用途
+    """
+    return get_redis_client(db=REDIS_DB_TOTP_FAIL)
+
+def _load_setup_cache(redis: Redis, key: str) -> Optional[TOTPSetupCache]:
+    """
+    从 Redis 读取并解析 TOTP 预绑定缓存
+
+    返回:
+    - None: 缓存不存在、格式损坏、字段缺失
+    - dict: 合法的 qrcode + secret
+
+    说明:
+    - 格式损坏时不直接抛异常, 调用方可以选择重新生成或直接失败
+    - 日志只记录 key 和错误, 不记录 secret
+    """
+    raw = redis.get(key)
+    if not raw:
+        return None
+    
+    try:
+        data = json.loads(_to_str(raw))
+    except Exception as exc:
+        logger.warning("[TOTPSetup] parse cache failed key=%s err=%s", key, exc)
+        return None
+    
+    if not isinstance(data, dict):
+        logger.warning("[TOTPSetup] invalid cache type key=%s type=%s", key, type(data))
+        return None
+    
+    qrcode = str(data.get("qrcode", "")).strip()
+    secret = str(data.get("secret", "")).strip()
+    
+    if not qrcode or not secret:
+        logger.warning("[TOTPSetup] cache missing qrcode/secret key=%s", key)
+        return None
+    
+    return {"qrcode": qrcode, "secret": secret}
+
+def _save_setup_cache(redis: Redis, key: str, value: TOTPSetupCache) -> bool:
+    """
+    写入 TOTP 预绑定缓存
+    
+    使用 nx=True:
+    - 防止锁异常或并发情况下覆盖已有 secret
+    - 返回 True 表示当前调用成功写入
+    - 返回 False 表示 key 已存在, 调用方应重新读取 Redis 中的真实缓存
+    """
+    payload = json.dumps(value, ensure_ascii=False)
+    return bool(redis.set(key, payload, ex=TOTP_QR_EXPIRE_SECONDS, nx=True))
+
 def check_totp_fail_limit(user_id: str, max_attempts: int = TOTP_FAIL_LIMIT) -> bool:
     """
-    检查用户 TOTP 验证失败次数是否超限
-    :param user_id: 用户唯一标识
-    :param max_attempts: 最大尝试次数(默认5次)
-    :return 是否超过限制(True表示已超限)
+    检查 TOTP 失败次数是否达到限制
+    
+    返回 True:
+    - 已达到或超过 max_attempts
+    - 调用方应拒绝继续校验, 避免暴力尝试
+    
+    Redis 异常策略:
+    - 当前为了兼容现有登录链路, Redis 异常时 fail-open 返回 False
+    - 如果要更严格的生产安全策略, 可以改为 fail-closed, 即异常时拒绝验证
     """
-    redis = get_redis_client(db=0)
+    redis = _get_fail_redis()
     key = get_totp_fail_key(user_id)
+    
     try:
         raw = redis.get(key)
         count = int(_to_str(raw)) if raw else 0
         return count >= max_attempts
-    except Exception as e:
-        logger.error(f"[TOTP限流] 获取失败次数异常: {e}")
+    except Exception as exc:
+        logger.error("[TOTPRateLimit] get fail count failed user_id=%s err=%s", user_id, exc)
         return False
 
-def record_totp_fail(user_id: str, expire_sec: int = TOTP_FAIL_WINDOW):
+def record_totp_fail(user_id: str, expire_sec: int = TOTP_FAIL_WINDOW_SECONDS) -> int:
     """
     记录一次 TOTP 验证失败
-    - 使用 Redis incr 自增计数器
-    - 设置过期时间限制失败窗口
-    """
-    redis = get_redis_client(db=0)
-    key = get_totp_fail_key(user_id)
-    try:
-        with redis.pipeline() as pipe:
-            while True:
-                try:
-                    pipe.watch(key)
-                    current = redis.get(key)
-                    # 开启事务
-                    pipe.multi()
-                    pipe.incr(key)
-                    if current is None:
-                        # 首次失败, 设置过期时间
-                        pipe.expire(key, expire_sec)
-                    pipe.execute()
-                    break
-                except WatchError:
-                    continue # 乐观锁冲突重试
-    except Exception as e:
-        logger.error(f"[TOTP限流] TOTP验证码错误次数校验记录异常: {e}")
     
-def clear_totp_fail(user_id: str):
+    返回:
+    - 当前失败次数
+    - Redis 异常时返回 0, 兼容旧逻辑
     """
-    清除用户失败次数 Redis 记录
+    redis = _get_fail_redis()
+    key = get_totp_fail_key(user_id)
+    
+    try:
+        count = cast(int, redis.incr(key))
+        if count == 1:
+            redis.expire(key, expire_sec)
+        else:
+            ttl = cast(int, redis.ttl(key))
+            if ttl < 0:
+                redis.expire(key, expire_sec)
+        return count
+    except Exception as exc:
+        logger.error("[TOTPRateLimit] record fail failed user_id=%s err=%s", user_id, exc)
+        return 0
+
+def clear_totp_fail(user_id: str) -> None:
     """
-    redis = get_redis_client(db=0)
+    清除用户 TOTP 失败计数
+    
+    调用时机:
+    - 绑定验证成功
+    - 解绑验证成功
+    - 登录二阶段验证成功
+    """
+    redis = _get_fail_redis()
     try:
         redis.delete(get_totp_fail_key(user_id))
-    except Exception as e:
-        logger.warning(f"[TOTP缓存清理] 清除验证码校验失败计数异常: {e}")
+    except Exception as exc:
+        logger.warning("[TOTPRateLimit] clear fail count failed user_id=%s err=%s", user_id, exc)
+
+def clear_totp_qrcode(user_id: str) -> None:
+    """
+    清除 TOTP 预绑定二维码缓存
+    """
+    redis = _get_qr_redis()
     
-def clear_totp_qrcode(user_id: str):
-    """
-    清除TOTP二维码 Redis 缓存
-    """
-    redis = get_redis_client(db=REDIS_DB_TOTP_QR_CACHE)
     try:
         redis.delete(get_totp_qr_key(user_id))
-    except Exception as e:
-        logger.warning(f"[TOTP缓存清理] 清除二维码缓存异常: {e}")
-    
-    
-# 启用TOTP验证(首次绑定)
-def init_totp(user: User) -> dict:
-    """
-    初始化 TOTP 启用流程:
-    - 若已启用则直接返回False
-    - 若 Redis 缓存中已有二维码 + secret, 一律返回缓存
-    - 否则使用锁机制生成新的 secret 与二维码，并写入 Redis 缓存（作为预绑定）
-    注: 仅在用户验证通过后再写入 Mysql
-    """
-    redis = get_redis_client(db=REDIS_DB_TOTP_QR_CACHE)
-    qr_key = get_totp_qr_key(str(user.id))
-    
-    if user.totp_enabled:
-        logger.info(f"[TOTP启用] 用户ID={user.id} 已启用TOTP, 无需重复绑定")
-        return {"error": "您已启用TOTP, 无需重复操作"}
-    
-    # 二维码 + secret 缓存存在则直接返回
-    try:
-        cache_raw = redis.get(qr_key)
-        if cache_raw:
-            try:
-                cache_data = json.loads(_to_str(cache_raw))
-                return {"qrcode": cache_data["qrcode"]}
-            except Exception as e:
-                logger.warning(f"[TOTP启用] 解析缓存内容异常: {e}")
-    except Exception as e:
-        logger.warning(f"[TOTP启用] 解析TOTP Redis缓存失败: {e}")
-    
-    # 缓存不存在, 则开始首次生成(使用分布式锁防止并发生成)
-    with build_lock(get_totp_lock_key(str(user.id)), ttl=3000, strategy="safe"):
-        try:
-            # 首次启用流程
-            totp_secret = generate_totp_secret() # 生成 TOTP 后端Secret密钥
-            uri = get_totp_uri(totp_secret, user.email) # 构建 OTP URI, 用于生成二维码识别信息
-            qr_image = generate_qr_image(uri) # 根据 OTP URI 生成二维码图像对象(PIL Image)
-            qr_base64 = encode_qr_image_to_base64(qr_image) # 将二维码图像编码为 base64 字符串
-            value = json.dumps({"qrcode": qr_base64, "secret": totp_secret})
-            redis.set(qr_key, value, ex=QR_EXPIRE_SECONDS, nx=True)
-            logger.info(f"[TOTP启用] 用户ID={user.id} 成功生成TOTP绑定二维码")
-            return {"qrcode": qr_base64}
-        except Exception as e:
-            logger.error(f"[TOTP启用] 初始化异常: {e}")
-            raise
-    
-# 验证绑定流程
-def verify_and_bind_totp(user: User, token: str) -> bool:
-    """
-    验证并启用 TOTP(首次绑定流程)
-    - 检查TOTP动态验证码失败次数是否超限(限流)
-    - 从 Redis 中读取二维码缓存(包含二维码和密钥)
-    - 使用缓存中的secret验证动态验证码
-    - 校验成功后写入数据库并启用
-    - 清除 Redis 缓存与失败计数
-    """
-    # 检查失败次数是否超限
-    if check_totp_fail_limit(str(user.id)):
-        logger.warning(f"[TOTP验证] 用户ID={user.id} 验证失败次数过多, 已被限流")
-        return False
-    
-    redis = get_redis_client(db=REDIS_DB_TOTP_QR_CACHE)
-    qr_key = get_totp_qr_key(str(user.id))
-    cache_raw = redis.get(qr_key)
-    
-    if not cache_raw:
-        logger.warning(f"[TOTP验证] 缓存不存在, 流程中断")
-        return False
-    
-    try:
-        totp_data = json.loads(_to_str(cache_raw))
-        totp_secret = totp_data.get("secret")
-        if not totp_secret:
-            logger.error(f"[TOTP验证] TOTP缓存中缺少 secret 字段")
-            return False
-    except Exception as e:
-        logger.error(f"[TOTP验证] 解析Redis缓存异常: {e}")
-        return False
-    
-    # 使用缓存中的 secret 校验 TOTP 动态验证码
-    if not verify_totp_token(totp_secret, token):
-        record_totp_fail(str(user.id))
-        logger.warning(f"[TOTP验证] 用户ID={user.id} 动态验证码错误")
-        return False
-    
-    clear_totp_fail(str(user.id)) # 清除校验失败次数记录
-    clear_totp_qrcode(str(user.id)) # 清除TOTP二维码(含secret)缓存
-    
-    # 数据落库
-    if not user.totp_enabled:
-        user.totp_secret = totp_secret
-        user.totp_enabled = True
-        user.save(update_fields=["totp_secret", "totp_enabled"])
-        logger.info(f"[TOTP验证] 用户ID={user.id} 成功启用TOTP二次验证")
-        
-    return True
+    except Exception as exc:
+        logger.warning("[TOTPSetup] clear setup cache failed user_id=%s err=%s", user_id, exc)
 
-# 解除TOTP绑定
-def disabled_totp(user: User, token: str) -> bool:
+def _invalidate_user_info_cache(user_id: str) -> None:
     """
-    解绑 TOTP
-    - 校验是否已启用
-    - 校验6位数动态验证码
-    - 成功后清除 totp_secret 与 启用状态, 并清理失败计数
+    清理用户信息缓存
+    - user_info 缓存中包含 totp_enabled
+    - 启用/解绑 TOTP 后如果不清理缓存，前端可能在 TTL 内看到旧状态
+    - UserInfoService.invalidate_cache 内部已处理 Redis 异常，这里不阻断主流程
     """
-    if not user.totp_enabled or not user.totp_secret:
-        logger.warning(f"[TOTP解绑] 用户ID={user.id} 尚未启用TOTP, 无法解绑")
-        return False
-    
-    if check_totp_fail_limit(str(user.id)):
-        logger.warning(f"[TOTP解绑] 用户ID={user.id} 验证失败次数过多, 已被限流")
-        return False
-    
-    if not verify_totp_token(user.totp_secret, token):
-        record_totp_fail(str(user.id))
-        logger.warning(f"[TOTP解绑] 用户ID={user.id} 验证码错误")
-        return False
-    
-    clear_totp_fail(str(user.id)) # 清除用户失败次数 Redis 记录
-    
-    user.totp_secret = None
-    user.totp_enabled = False
-    user.save(update_fields=["totp_secret", "totp_enabled"])
-    logger.info(f"[TOTP解绑] 用户ID={user.id} 成功解绑TOTP")
-    return True
+    UserInfoService.invalidate_cache(user_id)
 
-# 用户登录阶段 TOTP 验证
-def verify_login_totp(user: User, token: str) -> bool:
+def init_totp(user: User) -> Dict[str, str]:
     """
-    登录阶段 TOTP 动态口令校验服务函数
-    :param user: 当前用户对象
-    :param token: 用户提交的6位动态验证码
-    :return: 是否验证成功(True或False)
+    初始化 TOTP 绑定流程
+    
+    返回:
+    - {"qrcode": "...", "manual_secret": "..."}: 成功返回二维码 base64 和手动录入 secret
+    - {"error": "..."}: 兼容旧调用方式, 由 View 决定如何输出
     """
     user_id = str(user.id)
     
-    # 校验是否启用了 TOTP (二次验证)
-    if not user.totp_enabled or not user.totp_secret:
-        logger.warning(f"[TOTP登录校验] 用户ID={user_id} 未启用TOTP, 无需校验")
-        return False
-        
-    # 限流判断, 失败次数是否超过限制
+    if user.totp_enabled:
+        logger.info("[TOTPSetup] already enabled user_id=%s", user_id)
+        return {"error": "您已启用TOTP, 无需重复操作"}
+
+    redis = _get_qr_redis()
+    qr_key = get_totp_qr_key(user_id)
+    
+    # 避免每次刷新绑定页都重新加锁和生成二维码
+    cached = _load_setup_cache(redis, qr_key)
+    if cached:
+        return {
+            "qrcode": cached["qrcode"],
+            "manual_secret": cached["secret"],
+        }
+    
+    # 用户级分布式锁
+    with build_lock(get_totp_lock_key(user_id), ttl=TOTP_LOCK_TTL_MS, strategy="safe"):
+        # 锁内二次读取:
+        # 请求 A 可能已经在锁内写入缓存并释放锁
+        # 请求 B 获锁后如果不二次读取, 就会再次生成 secret
+        cached = _load_setup_cache(redis, qr_key)
+        if cached:
+            return {
+                "qrcode": cached["qrcode"],
+                "manual_secret": cached["secret"],
+            }
+
+        try:
+            totp_secret = generate_totp_secret()
+            uri = get_totp_uri(
+                secret=totp_secret,
+                username=user.email,
+                issuer_name=TOTP_ISSUER_NAME,
+            )
+            qr_image = generate_qr_image(uri)
+            qr_base64 = encode_qr_image_to_base64(qr_image)
+
+            setup_cache: TOTPSetupCache = {
+                "qrcode": qr_base64,
+                "secret": totp_secret,
+            }
+            
+            # nx=True 为最后一道并发保护
+            # 即使锁实现异常或外部并发写入, 也不会覆盖已有 secret
+            # 只有 saved=True 时, 当前生成的二维码才和 Redis 中的 secret 一致
+            saved = _save_setup_cache(redis, qr_key, setup_cache)
+            if saved:
+                logger.info("[TOTPSetup] setup cache created user_id=%s", user_id)
+                return {
+                    "qrcode": qr_base64,
+                    "manual_secret": totp_secret,
+                }
+            
+            # 如果 nx 写入失败, 必须重新读取 Redis 中真实存在的缓存并返回
+            cached = _load_setup_cache(redis, qr_key)
+            if cached:
+                logger.info("[TOTPSetup] setup cache reused after nx conflict user_id=%s", user_id)
+                return {
+                    "qrcode": cached["qrcode"],
+                    "manual_secret": cached["secret"],    
+                }
+
+            logger.error("[TOTPSetup] nx conflict but cache missing user_id=%s", user_id)
+            return {"error": "TOTP初始化失败, 请稍后重试"}
+
+        except Exception as exc:
+            logger.exception("[TOTPSetup] setup failed user_id=%s err=%s", user_id, exc)
+            raise
+
+def verify_and_bind_totp(user: User, token: str) -> bool:
+    """
+    验证用户输入的 TOTP 动态码, 并正式启用 TOTP
+    
+    顺序:
+    1. 检查是否已启用
+    2. 检查失败次数是否超限
+    3. 从 Redis 读取预绑定 secret
+    4. 校验 token
+    5. 数据库事务内写入 user.totp_secret / user.totp_enabled
+    6. 在同一事务中提升 sess_ver
+    7. 数据库保存成功后清理 TOTP Redis 缓存和 user_info 缓存
+    """
+    user_id = str(user.id)
+    token = str(token or "").strip()
+    
+    if user.totp_enabled:
+        logger.info("[TOTPBind] already enabled user_id=%s", user_id)
+        clear_totp_fail(user_id)
+        clear_totp_qrcode(user_id)
+        # 幂等返回成功时清理 user_info, 避免缓存仍显示 totp_enabled=False
+        _invalidate_user_info_cache(user_id)
+        return True
+    
     if check_totp_fail_limit(user_id):
-        logger.warning(f"[TOTP登录校验] 用户ID={user_id} 验证失败次数过多, 已被限流")
-        return False
-        
-    # 验证6位动态口令是否正确
-    if not verify_totp_token(user.totp_secret, token):
-        record_totp_fail(user_id) # 记录1次失败次数
-        logger.warning(f"[TOTP登录校验] 用户ID={user_id} 验证码错误")
+        logger.warning("[TOTPBind] rejected by fail limit user_id=%s", user_id)
         return False
     
-    # 清除失败记录, 验证成功
+    redis = _get_qr_redis()
+    qr_key = get_totp_qr_key(user_id)
+    
+    setup_cache = _load_setup_cache(redis, qr_key)
+    if not setup_cache:
+        logger.warning("[TOTPBind] setup cache missing or invalid user_id=%s", user_id)
+        return False
+    
+    totp_secret = setup_cache["secret"]
+    
+    if not verify_totp_token(totp_secret, token):
+        count = record_totp_fail(user_id)
+        logger.warning("[TOTPBind] bad token user_id=%s fail_count=%s", user_id, count)
+        return False
+    
+    # 绑定 - 敏感写操作
+    # 使用用户级分布式锁保护
+    # - 防止同一用户并发提交绑定确认
+    # - 防止绑定和解绑并发互相覆盖
+    with build_lock(get_totp_lock_key(user_id), ttl=TOTP_LOCK_TTL_MS, strategy="safe"):
+        try:
+            with transaction.atomic():
+                locked_user = cast(User, User.objects.select_for_update().get(id=user.id))
+                
+                # 并发幂等:
+                # 如果另一个请求已经成功启用 TOTP, 当前请求不再重复写库或重复提升 sv
+                if locked_user.totp_enabled:
+                    logger.info("[TOTPBind] enabled by concurrent request user_id=%s", user_id)
+                else:
+                    locked_user.totp_secret = totp_secret
+                    locked_user.totp_enabled = True
+                    locked_user.save(update_fields=["totp_secret", "totp_enabled"])
+                    
+                    # 提升sess_ver, 使启用前签发的 access/refresh token 全部失效
+                    UserStateService.invalidate_sessions(
+                        int(locked_user.id),
+                        reason="totp_enabled",
+                    )
+        except Exception as exc:
+            logger.exception("[TOTPBind] db save failed user_id=%s err=%s", user_id, exc)
+            raise
+    
     clear_totp_fail(user_id)
-    logger.info(f"[TOTP登录校验] 用户ID={user_id} 登录二次验证TOTP验证通过")
+    clear_totp_qrcode(user_id)
+    _invalidate_user_info_cache(user_id)
+    
+    logger.info("[TOTPBind] enabled user_id=%s", user_id)
+    return True
+
+def disabled_totp(user: User, token: str) -> bool:
+    """
+    解绑 TOTP
+    
+    注:
+    - 当前只要求 TOTP 动态码
+    - 更高安全等级可要求重新输入密码或最近登录确认
+    - 解绑成功后提升 session version, 使旧 token 失效
+    """
+    user_id = str(user.id)
+    token = str(token or "").strip()
+    
+    if not user.totp_enabled or not user.totp_secret:
+        logger.warning("[TOTPDisable] not enabled user_id=%s", user_id)
+        return False
+    
+    if check_totp_fail_limit(user_id):
+        logger.warning("[TOTPDisable] rejected by fail limit user_id=%s", user_id)
+        return False
+    
+    if not verify_totp_token(user.totp_secret, token):
+        count = record_totp_fail(user_id)
+        logger.warning("[TOTPDisable] bad token user_id=%s fail_count=%s", user_id, count)
+        return False
+    
+    # 解绑为敏感写操作:
+    # 修改 sess_ver, 失效旧 token
+    with build_lock(get_totp_lock_key(user_id), ttl=TOTP_LOCK_TTL_MS, strategy="safe"):
+        try:
+            with transaction.atomic():
+                # 行锁保护当前用户 TOTP 状态, 避免并发解绑/绑定覆盖
+                locked_user = cast(User, User.objects.select_for_update().get(id=user.id))
+                
+                # 并发幂等
+                # 如果另一个请求已解绑成功, 当前请求无需重复提升sv
+                if not locked_user.totp_enabled:
+                    logger.info("[TOTPDisable] already disabled user_id=%s", user_id)
+                else:
+                    locked_user.totp_secret = None
+                    locked_user.totp_enabled = False
+                    locked_user.save(update_fields=["totp_secret", "totp_enabled"])
+                    
+                    UserStateService.invalidate_sessions(
+                        int(locked_user.id),
+                        reason="totp_disabled",
+                    )
+        except Exception as exc:
+            logger.exception("[TOTPDisable] db save or sv bump failed user_id=%s err=%s", user_id, exc)
+            raise
+    
+    clear_totp_fail(user_id)
+    clear_totp_qrcode(user_id)
+    _invalidate_user_info_cache(user_id)
+    
+    logger.info("[TOTPDisable] disabled user_id=%s", user_id)
+    return True
+
+def verify_login_totp(user: User, token: str) -> bool:
+    """
+    登录阶段 TOTP 校验
+    
+    当前保持 bool 返回, 兼容 LoginTOTPVerifyService
+    
+    True:
+    - 验证通过
+    
+    False:
+    - 未启用 TOTP
+    - secret 缺失
+    - token 格式错误
+    - token 校验失败
+    - 失败次数超限
+    """
+    user_id = str(user.id)
+    token = str(token or "").strip()
+    
+    if not user.totp_enabled or not user.totp_secret:
+        logger.warning("[TOTPLogin] not enabled user_id=%s", user_id)
+        return False
+    
+    if check_totp_fail_limit(user_id):
+        logger.warning("[TOTPLogin] rejected by fail limit user_id=%s", user_id)
+        return False
+    
+    if not verify_totp_token(user.totp_secret, token):
+        count = record_totp_fail(user_id)
+        logger.warning("[TOTPLogin] bad token user_id=%s fail_count=%s", user_id, count)
+        return False
+    
+    clear_totp_fail(user_id)
+    logger.info("[TOTPLogin] verified user_id=%s", user_id)
     return True
