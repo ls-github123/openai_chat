@@ -6,6 +6,8 @@ from users.views.loginTOTPVerifyView import LoginTOTPVerifyView # 用户登录�
 # 已登录用户TOTP管理视图: 初始化绑定、确认启用、解绑
 from users.views.totp import TOTPInitView, TOTPConfirmView, TOTPDisableView
 from users.views.user_info_view import UserInfoView # 当前登录用户信息获取视图
+# 用户密码重置视图: 密码重置申请、密码重置确认
+from users.views.password_reset_view import PasswordResetRequestView, PasswordResetConfirmView
 from users.views.token_refresh_view import TokenRefreshView # 用户令牌刷新视图
 from users.views.logout_view import LogoutView # 用户退出登录状态视图(拉黑access_token + refresh_token)
 
@@ -35,8 +37,10 @@ urlpatterns = [
     # 当前登录用户用户信息获取/查询(仅返回当前 access token 对应用户)
     path("userinfo/", UserInfoView.as_view(), name="userinfo"),
     
-    # 密码重置
-    # path("password/refresh",),
+    # 密码重置申请
+    path("password/reset/request/", PasswordResetRequestView.as_view(), name="password_reset_request"),
+    # 密码重置确认
+    path("password/reset/confirm/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     
     # 退出
     path("logout/", LogoutView.as_view(), name="logout"), # 用户退出登录
