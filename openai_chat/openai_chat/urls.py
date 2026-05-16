@@ -16,6 +16,15 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from openai_chat.settings.simpleui.config import (
+    ADMIN_INDEX_TITLE,
+    ADMIN_SITE_HEADER,
+    ADMIN_SITE_TITLE,
+)
+
+admin.site.site_header = ADMIN_SITE_HEADER
+admin.site.site_title = ADMIN_SITE_TITLE
+admin.site.index_title = ADMIN_INDEX_TITLE
 
 urlpatterns = [
     path('admin/', admin.site.urls),

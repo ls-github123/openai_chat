@@ -15,7 +15,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     - 密码字段由 AbstractBaseUser 提供, 自动加密存储
     """
     # editable=False 该字段不会在Django管理后台或表单中显示,也不能被编辑器修改
-    id = models.BigIntegerField('用户ID', primary_key=True, editable=False, help_text="雪花算法生成的用户ID")
+    id = models.BigIntegerField('用户ID', primary_key=True, editable=False, help_text="(雪花算法生成的用户ID)")
     email = models.EmailField('邮箱地址', unique=True, null=False, blank=False, db_index=True, help_text="用于用户账户登录与验证")
     username = models.CharField('用户名', max_length=150, unique=False, null=False, blank=False, db_index=True, default="", help_text="用户名")
     phone = models.CharField("手机号", max_length=20, null=True, blank=True, help_text="可选添加手机号")
@@ -113,3 +113,71 @@ class UserLoginRecord(models.Model):
     
     def __str__(self):
         return f"{self.user}的用户登录记录"
+
+
+# === Admin 操作审计日志模型 ===
+class AdminAuditLog(models.Model):
+    """
+    Django Admin 写操作审计日志。
+
+    - 记录后台管理员对业务对象的成功写操作
+    - before / after 只存必要字段快照，敏感字段由接入层脱敏
+    - 作为审计数据在后台只允许查看，不允许手工新增、修改或删除
+    """
+    ACTION_CREATE = "create"
+    ACTION_UPDATE = "update"
+    ACTION_PASSWORD_CHANGE = "password_change"
+    ACTION_ADMIN_ACTION = "admin_action"
+    ACTION_FORCE_LOGOUT = "force_logout"
+
+    ACTION_CHOICES = (
+        (ACTION_CREATE, "新增"),
+        (ACTION_UPDATE, "修改"),
+        (ACTION_PASSWORD_CHANGE, "修改密码"),
+        (ACTION_ADMIN_ACTION, "后台动作"),
+        (ACTION_FORCE_LOGOUT, "强制下线"),
+    )
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="admin_audit_logs",
+        verbose_name="操作管理员",
+        help_text="执行后台写操作的管理员；用户被删除后保留快照字段",
+    )
+    actor_identifier = models.CharField(
+        "管理员快照",
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="管理员ID/邮箱快照，避免外键置空后丢失审计主体",
+    )
+    action = models.CharField("操作类型", max_length=32, choices=ACTION_CHOICES)
+    reason = models.CharField("操作原因", max_length=128, blank=True, default="")
+    target_model = models.CharField("目标模型", max_length=128, db_index=True)
+    target_object_id = models.CharField("目标对象ID", max_length=64, db_index=True)
+    target_repr = models.CharField("目标对象快照", max_length=255, blank=True, default="")
+    changed_fields = models.JSONField("变更字段", default=list, blank=True)
+    before = models.JSONField("变更前", default=dict, blank=True)
+    after = models.JSONField("变更后", default=dict, blank=True)
+    ip_address = models.GenericIPAddressField("操作IP", null=True, blank=True)
+    user_agent = models.CharField("浏览器UA", max_length=512, blank=True, default="")
+    request_path = models.CharField("请求路径", max_length=512, blank=True, default="")
+    request_method = models.CharField("请求方法", max_length=16, blank=True, default="")
+    created_at = models.DateTimeField("审计时间", default=timezone.now, db_index=True)
+    
+    class Meta:
+        db_table = "users_admin_audit_log"
+        verbose_name = "Admin操作审计日志"
+        verbose_name_plural = "Admin操作审计日志"
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["actor", "-created_at"], name="idx_admin_audit_actor_time"),
+            models.Index(fields=["target_model", "target_object_id"], name="idx_admin_audit_target"),
+            models.Index(fields=["action", "-created_at"], name="idx_admin_audit_action_time"),
+        ]
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.actor_identifier} {self.action}"

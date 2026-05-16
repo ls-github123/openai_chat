@@ -22,7 +22,6 @@ BASE_DIR = path_utils.BASE_DIR # 项目根路径
 AZURE_VAULT_URL = get_config("AZURE_VAULT_URL", default="https://openai-chat-key.vault.azure.net/")
 JWT_KEY = get_config("JWT_ECS_SECRET_KEY_NAME", default="JWT-ECS-SIGNING-KEY")
 
-
 # 安全配置
 SECRET_KEY = SecretConfig.DJANGO_SECRET_KEY # Django密钥
 # DEBUG = config("DEBUG", cast=bool, default=True)
@@ -33,6 +32,7 @@ SECRET_KEY = SecretConfig.DJANGO_SECRET_KEY # Django密钥
 # --- 应用注册 ---
 INSTALLED_APPS = [
     # === Django 官方内置应用 ===
+    'simpleui', # simpleUI 后台管理界面
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -50,6 +50,9 @@ INSTALLED_APPS = [
     'users', # 用户管理模块
     'system.apps.SystemConfig', # 系统初始化模块
 ]
+
+# === simpleui 后台管理界面配置 ===
+from .simpleui.config import *
 
 # === REST Framework配置(适用生产环境) ===
 REST_FRAMEWORK = {
