@@ -1,66 +1,194 @@
+from __future__ import annotations
+
+import os
+from threading import RLock
+from typing import ClassVar
+
+from decouple import UndefinedValueError, config
+
 from openai_chat.settings.utils.logging import get_logger
-from decouple import config
+
 from .azure_key_vault_client import AzureKeyVaultClient
 
-# 初始化日志记录器
 logger = get_logger("project.get_config")
 
-# === 工具方法:安全读取.env配置项 ===
-def get_config(key: str, default: str | None = None) -> str:
+_vault_lock = RLock()
+_vault_client: AzureKeyVaultClient | None = None
+
+
+def _is_prod_settings() -> bool:
+    settings_module = os.getenv("DJANGO_SETTINGS_MODULE", "").strip().lower()
+    return settings_module.endswith(".prod") or ".prod." in settings_module
+
+
+def get_config(
+    key: str,
+    default: str | None = None,
+    *,
+    allow_blank: bool = False,
+    required_in_prod: bool = False,
+) -> str:
     """
-    从.env文件中安全读取配置项,支持默认值
-    :param key: 配置项名称
-    :param default: 默认值
-    :return: 配置项值(字符串)
-    :raise RuntimeError:若无默认值且环境变量缺失,则终止运行
+    从环境变量或 .env 读取配置项。
+
+    规则:
+    - default=None 表示该配置必填。
+    - required_in_prod=True 时，生产环境不允许因为缺失而使用默认值。
+    - 默认不接受空字符串，确实允许为空时显式传 allow_blank=True。
     """
+    key = (key or "").strip()
+    if not key:
+        raise RuntimeError("[Config]配置项名称不能为空")
+
     try:
-        return str(config(key, default=default, cast=str))
-    except Exception as e:
-        if default is not None:
-            logger.warning(f"[Config]配置项{key}缺失,使用默认值{default}")
-            return str(default)
-        logger.error(f"[Config]缺少必要配置:{key}", exc_info=True)
-        raise RuntimeError(f"[Config]缺少必要配置:{key}") from e
+        value = config(key, cast=str)
+    except UndefinedValueError as exc:
+        if required_in_prod and _is_prod_settings():
+            logger.error("[Config]生产环境缺少必要配置:%s", key)
+            raise RuntimeError(f"[Config]生产环境缺少必要配置:{key}") from exc
 
-# === 工具方法:通过.env文件中密钥名获取对应密钥值 ===
-def get_secret_by_env(env_key: str, default_key: str, vault_client:AzureKeyVaultClient) -> str:
+        if default is None:
+            logger.error("[Config]缺少必要配置:%s", key)
+            raise RuntimeError(f"[Config]缺少必要配置:{key}") from exc
+
+        logger.warning("[Config]配置项%s缺失,使用默认值", key)
+        value = default
+
+    value_str = str(value).strip()
+    if not allow_blank and value_str == "":
+        logger.error("[Config]配置项%s为空", key)
+        raise RuntimeError(f"[Config]配置项为空:{key}")
+
+    return value_str
+
+
+def get_optional_config(key: str, *, allow_blank: bool = False) -> str | None:
     """
-    从.env 中获取密钥名称，再从 Azure Key Vault 获取对应密钥值
-    :param env_key: .env 中用于获取密钥名称的变量名
-    :param default_key: 默认密钥名称变量名（用于缺省兜底）
-    :param vault_client: AzureKeyVaultClient 实例
-    :return: 从 Azure-Key-Vault 获取到的密钥值
-    :raise RuntimeError: 若密钥名称缺失或获取失败,则终止运行
+    读取可选配置。
+
+    与 get_config() 不同，本函数用于“探测是否存在”，缺失时不写 warning。
     """
-    secret_name = get_config(env_key, default=default_key) # 从.env中获取密钥名称
+    key = (key or "").strip()
+    if not key:
+        return None
+
+    value = str(config(key, default="", cast=str)).strip()
+    if value == "" and not allow_blank:
+        return None
+    return value
+
+
+def get_vault_client() -> AzureKeyVaultClient:
+    """
+    懒加载 Azure Key Vault 客户端。
+
+    只在真正读取 secret 时创建客户端，避免 manage.py / py_compile /
+    普通模块导入阶段触发 Azure 凭据链和网络相关失败。
+    """
+    global _vault_client
+
+    if _vault_client is not None:
+        return _vault_client
+
+    with _vault_lock:
+        if _vault_client is None:
+            vault_url = get_config(
+                "AZURE_VAULT_URL",
+                default="https://openai-chat-key.vault.azure.net/",
+                required_in_prod=True,
+            )
+            raw_cache_ttl = get_optional_config("AZURE_KEY_VAULT_SECRET_CACHE_TTL_SECONDS")
+            try:
+                cache_ttl = int(raw_cache_ttl or AzureKeyVaultClient.DEFAULT_CACHE_TTL_SECONDS)
+            except ValueError as exc:
+                raise RuntimeError("AZURE_KEY_VAULT_SECRET_CACHE_TTL_SECONDS 必须为整数") from exc
+
+            _vault_client = AzureKeyVaultClient(
+                vault_url=vault_url,
+                cache_ttl_seconds=cache_ttl,
+            )
+        return _vault_client
+
+
+def get_secret_by_env(env_key: str, default_key: str, vault_client: AzureKeyVaultClient | None = None) -> str:
+    """
+    从环境变量读取 Azure Key Vault secret name，再从 Key Vault 获取 secret value。
+
+    生产环境要求显式配置 secret name 并走 Key Vault。
+    开发环境允许直接配置密钥值，例如:
+    - DJANGO_SECRET_KEY_NAME 对应的直接密钥变量为 DJANGO_SECRET_KEY
+    - REDIS_PASSWORD_NAME 对应的直接密钥变量为 REDIS_PASSWORD
+    """
+    direct_env_key = env_key[:-5] if env_key.endswith("_NAME") else ""
+    if direct_env_key and not _is_prod_settings():
+        direct_secret = get_optional_config(direct_env_key)
+        if direct_secret:
+            return direct_secret
+
+    secret_name = get_config(
+        env_key,
+        default=default_key,
+        required_in_prod=True,
+    )
+    client = vault_client or get_vault_client()
+
     try:
-        return vault_client.get_secret(secret_name) # 从 Azure Key Vault 中获取密钥值
-    except Exception as e:
-        logger.error(f"[Vault]获取密钥失败:{secret_name}, err={e}", exc_info=True)
-        raise RuntimeError(f"[Vault]获取密钥失败:{secret_name}") from e
+        return client.get_secret(secret_name)
+    except Exception as exc:
+        logger.error(
+            "[Vault]获取密钥失败 env_key=%s error_type=%s",
+            env_key,
+            type(exc).__name__,
+        )
+        raise RuntimeError(f"[Vault]获取密钥失败:{env_key}") from exc
 
-# === Azure Key Vault 客户端初始化 ===
-try:
-    AZURE_KEY_VAULT_URL = get_config("AZURE_VAULT_URL", default="vault_url")
-    vault = AzureKeyVaultClient(AZURE_KEY_VAULT_URL)
-except Exception as e:
-    logger.critical("[Config] Azure Key Vault 客户端初始化失败", exc_info=True)
-    raise RuntimeError("[Vault]客户端初始化失败") from e
 
-# === 密钥配置项(封装为类) ===
-class SecretConfig:
-    """集中管理所有密钥项"""
-    DJANGO_SECRET_KEY: str = get_secret_by_env("DJANGO_SECRET_KEY_NAME", "Django-SECRET-KEY", vault)
-    REDIS_PASSWORD: str = get_secret_by_env("REDIS_PASSWORD_NAME", "openai-redis-pd", vault)
-    MONGO_PASSWORD: str = get_secret_by_env("MONGO_PASSWORD_NAME", "mongodb-chatuser-pwd", vault)
-    DB_PASSWORD: str = get_secret_by_env("DB_PASSWORD_NAME", "openai-mysql-root", vault) # Mysql默认主库密码
-    RESEND_API_KEY: str = get_secret_by_env("RESEND_EMAIL_API_KEY_NAME", "RESEND-API-KEY", vault) # Resend邮件发送服务API Key
-    # Cloudflare Turnstile人机验证服务组件(admin管理模块)后端密钥名
-    TURNSTILE_ADMIN_SECRET_KEY: str = get_secret_by_env("TURNSTILE_ADMIN_SECRET_KEY_NAME", "trunstile-admin-secret-key", vault)
-    # Cloudflare Turnstile人机验证服务组件(用户登录/注册模块)后端密钥名
-    TURNSTILE_USERS_SECRET_KEY: str = get_secret_by_env("TURNSTILE_USERS_SECRET_KEY_NAME", "turnstile-users-secret-key", vault)
-    
+class _SecretConfigMeta(type):
+    _secret_map: ClassVar[dict[str, tuple[str, str]]] = {
+        "DJANGO_SECRET_KEY": ("DJANGO_SECRET_KEY_NAME", "Django-SECRET-KEY"),
+        "REDIS_PASSWORD": ("REDIS_PASSWORD_NAME", "openai-redis-pd"),
+        "MONGO_PASSWORD": ("MONGO_PASSWORD_NAME", "mongodb-chatuser-pwd"),
+        "DB_PASSWORD": ("DB_PASSWORD_NAME", "openai-mysql-root"),
+        "RESEND_API_KEY": ("RESEND_EMAIL_API_KEY_NAME", "RESEND-API-KEY"),
+        "TURNSTILE_ADMIN_SECRET_KEY": (
+            "TURNSTILE_ADMIN_SECRET_KEY_NAME",
+            "trunstile-admin-secret-key",
+        ),
+        "TURNSTILE_USERS_SECRET_KEY": (
+            "TURNSTILE_USERS_SECRET_KEY_NAME",
+            "turnstile-users-secret-key",
+        ),
+    }
+
+    def __getattr__(cls, name: str) -> str:
+        if name not in cls._secret_map:
+            raise AttributeError(name)
+        env_key, default_key = cls._secret_map[name]
+        return get_secret_by_env(env_key, default_key)
+
+
+class SecretConfig(metaclass=_SecretConfigMeta):
+    """集中管理密钥项，所有密钥均按需从 Azure Key Vault 读取。"""
+
+    DJANGO_SECRET_KEY: str
+    REDIS_PASSWORD: str
+    MONGO_PASSWORD: str
+    DB_PASSWORD: str
+    RESEND_API_KEY: str
+    TURNSTILE_ADMIN_SECRET_KEY: str
+    TURNSTILE_USERS_SECRET_KEY: str
+
+
+class _VaultClientProxy:
+    def __getattr__(self, name: str):
+        return getattr(get_vault_client(), name)
+
+
 class VaultClient:
-    """暴露Vault实例接口(特殊情况下直接使用)"""
-    instance = vault
+    """暴露 Vault 客户端懒加载入口。"""
+
+    instance = _VaultClientProxy()
+
+    @classmethod
+    def get_instance(cls) -> AzureKeyVaultClient:
+        return get_vault_client()

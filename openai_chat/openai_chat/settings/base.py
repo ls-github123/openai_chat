@@ -10,7 +10,7 @@ import json
 from pathlib import Path # 导入路径处理工具
 from openai_chat.settings.utils.logging import build_logging # 日志构建器
 from openai_chat.settings.utils import path_utils # 导入路径工具模块
-from .config import get_config, SecretConfig, VaultClient # 从config.py导入配置项
+from .config import get_config, get_optional_config, SecretConfig, VaultClient # 从config.py导入配置项
 # from pymongo import MongoClient # MongoDB客户端
 from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mysql数据库连接池
 
@@ -19,8 +19,16 @@ from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mys
 BASE_DIR = path_utils.BASE_DIR # 项目根路径
 
 # === Azure Key Vault 配置 ===
-AZURE_VAULT_URL = get_config("AZURE_VAULT_URL", default="https://openai-chat-key.vault.azure.net/")
-JWT_KEY = get_config("JWT_ECS_SECRET_KEY_NAME", default="JWT-ECS-SIGNING-KEY")
+AZURE_VAULT_URL = get_config(
+    "AZURE_VAULT_URL",
+    default="https://openai-chat-key.vault.azure.net/",
+    required_in_prod=True,
+)
+JWT_KEY = get_config(
+    "JWT_ECS_SECRET_KEY_NAME",
+    default="JWT-ECS-SIGNING-KEY",
+    required_in_prod=True,
+)
 
 # 安全配置
 SECRET_KEY = SecretConfig.DJANGO_SECRET_KEY # Django密钥
@@ -59,9 +67,6 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES':( # 默认认证方式配置(用于识别用户身份)
         # 使用自定义的JWT认证类
         'openai_chat.settings.utils.jwt.jwt_auth.JWTAuthentication',
-        
-        # 支持后台管理页面使用使用 Cookie 登录
-        'rest_framework.authentication.SessionAuthentication', 
     ),
     'DEFAULT_PERMISSION_CLASSES':(
         # 默认权限控制类:
@@ -185,10 +190,7 @@ REDIS_PORT = get_config('REDIS_PORT', default='6379') # Redis主机端口号
 REDIS_PASSWORD = SecretConfig.REDIS_PASSWORD # Redis连接密码
 
 # === Redlock 分布式锁节点配置 ===
-_redlock_servers_json = get_config(
-    "REDLOCK_SERVERS_JSON",
-    default="",
-)
+_redlock_servers_json = get_optional_config("REDLOCK_SERVERS_JSON", allow_blank=True) or ""
 
 _redlock_servers_json = str(_redlock_servers_json).strip()
 if _redlock_servers_json:
@@ -351,7 +353,7 @@ USE_I18N = True # 启用Django国际化支持
 USE_TZ = True # 使用Django时区支持
 
 # 机器唯一ID
-MACHINE_UNIQUE_ID = get_config("MACHINE_UNIQUE_ID", default=None) # 机器唯一标识,用于分布式ID生成
+MACHINE_UNIQUE_ID = get_config("MACHINE_UNIQUE_ID", default="", allow_blank=True) # 机器唯一标识,用于分布式ID生成
 
 # === 日志处理器配置 ===
 
