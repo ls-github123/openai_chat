@@ -35,6 +35,9 @@ SIMPLEUI_ICON = {
     "有效刷新令牌": "fa fa-key",
     "Blacklisted tokens": "fa fa-ban",
     "黑名单令牌": "fa fa-ban",
+    "OpenAI Provider 配置": "fa fa-plug",
+    "OpenAI 模型配置": "fa fa-microchip",
+    "OpenAI API 调用日志": "fa fa-chart-line",
 }
 
 # === SimpleUI 自定义菜单 ===
@@ -48,6 +51,7 @@ SIMPLEUI_CONFIG = {
         "身份与用户",
         "安全与令牌",
         "权限治理",
+        "OpenAI API",
     ],
     
     "menus": [
@@ -96,6 +100,30 @@ SIMPLEUI_CONFIG = {
                     "icon": "fa fa-users-gear",
                     "url": "auth/group/",
                     "permission": "auth.view_group",
+                },
+            ],
+        },
+        {
+            "name": "OpenAI API",
+            "icon": "fa fa-robot",
+            "models": [
+                {
+                    "name": "Provider 配置",
+                    "icon": "fa fa-plug",
+                    "url": "openai_api/openaiproviderconfig/",
+                    "permission": "openai_api.view_openaiproviderconfig",
+                },
+                {
+                    "name": "模型配置",
+                    "icon": "fa fa-microchip",
+                    "url": "openai_api/openaimodelconfig/",
+                    "permission": "openai_api.view_openaimodelconfig",
+                },
+                {
+                    "name": "调用日志",
+                    "icon": "fa fa-chart-line",
+                    "url": "openai_api/openaiusagelog/",
+                    "permission": "openai_api.view_openaiusagelog",
                 },
             ],
         },

@@ -13,6 +13,7 @@ from openai_chat.settings.utils import path_utils # 导入路径工具模块
 from .config import get_config, get_optional_config, SecretConfig, VaultClient # 从config.py导入配置项
 # from pymongo import MongoClient # MongoDB客户端
 from openai_chat.settings.utils.mysql_config import get_mysql_config # 导入Mysql数据库连接池
+from openai_api.config import OPENAI_API
 
 
 # 基础目录
@@ -57,6 +58,7 @@ INSTALLED_APPS = [
     'interface_test', # 接口测试模块
     'users', # 用户管理模块
     'system.apps.SystemConfig', # 系统初始化模块
+    'openai_api', # Openai API 管理模块
 ]
 
 # === simpleui 后台管理界面配置 ===
@@ -223,6 +225,7 @@ REDIS_DB_USERS_LOGIN_PENDING = 9 # 用户登录预登录缓存占用库
 REDIS_DB_IDEMPOTENCY = 10 # 接口幂等性占用库
 REDIS_DB_MAIL = 11 # 邮件通道: done/lock/cooldown/rate等
 REDIS_DB_TOTP_FAIL = 12 # TOTP验证码失败计数/限流占用库
+REDIS_DB_OPENAI_RATE_LIMIT = 13 # OpenAI API 用户限流/配额计数占用库
 REDIS_DB_DJANGO_CACHE = 14 # DJANGO 框架缓存占用库
 REDIS_DB_SNOWFLAKE = 15 # 雪花ID节点信息存储占用库
 

@@ -158,6 +158,8 @@ class _SecretConfigMeta(type):
             "TURNSTILE_USERS_SECRET_KEY_NAME",
             "turnstile-users-secret-key",
         ),
+        "OPENAI_API_KEY": ("OPENAI_API_KEY_NAME", "OpenAI-AIChatPlatform-Model-API-Key"),
+        "OPENAI_ADMIN_KEY": ("OPENAI_ADMIN_KEY_NAME", "OpenAI-AIChatPlatform-Admin-Key"),
     }
 
     def __getattr__(cls, name: str) -> str:
@@ -168,8 +170,8 @@ class _SecretConfigMeta(type):
 
 
 class SecretConfig(metaclass=_SecretConfigMeta):
-    """集中管理密钥项，所有密钥均按需从 Azure Key Vault 读取。"""
-
+    """集中管理密钥项，所有密钥均按需从 Azure Key Vault 读取"""
+    
     DJANGO_SECRET_KEY: str
     REDIS_PASSWORD: str
     MONGO_PASSWORD: str
@@ -177,6 +179,8 @@ class SecretConfig(metaclass=_SecretConfigMeta):
     RESEND_API_KEY: str
     TURNSTILE_ADMIN_SECRET_KEY: str
     TURNSTILE_USERS_SECRET_KEY: str
+    OPENAI_API_KEY: str
+    OPENAI_ADMIN_KEY: str
 
 
 class _VaultClientProxy:
